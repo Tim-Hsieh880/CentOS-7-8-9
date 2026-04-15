@@ -73,7 +73,7 @@ systemctl enable --now acpid
 
 echo ">>> [4/7] 建立 SSH 端口更換工具並存放到 /root ..."
 
-# 直接在 /root 下產生工具，確保不會被後續的目錄清理刪除
+# 確保 EOF 前後沒有多餘空格或縮排，修正之前的 Warning
 cat << 'EOF' > /root/Change_SSH_Port.sh
 #!/bin/bash
 # CDNCloud SSH Port 更換工具
@@ -86,6 +86,7 @@ sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
 systemctl restart sshd
 echo "SSH Port 已更改為 $NEW_PORT，請記得在防火牆放行該端口。"
 EOF
+
 chmod +x /root/Change_SSH_Port.sh
 
 echo ">>> [5/7] 設定 Cloud-init 與 QGA 維護服務..."
@@ -96,7 +97,7 @@ sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
 sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
 
 if ! grep -q "network:" /etc/cloud/cloud.cfg; then
-cat >> /etc/cloud/cloud.cfg << "EOF"
+cat << 'EOF' >> /etc/cloud/cloud.cfg
 datasource:
   Ec2:
     max_wait: 5
@@ -108,7 +109,7 @@ lock_passwd: false
 EOF
 fi
 
-# QGA 維護服務
+# QGA 維護服務腳本
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-qga.sh
 #!/bin/bash
 while true; do
@@ -124,4 +125,84 @@ chmod +x /usr/lib/systemd/system/cdncloud-qga.sh
 
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-qga.service
 [Unit]
-Description=CDNCloud Qemu Guest Agent
+Description=CDNCloud Qemu Guest Agent Monitor
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/lib/systemd/system/cdncloud-qga.sh
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable --now cdncloud-qga.service
+
+echo ">>> [6/7] 執行內核優化、資源限制與時間同步..."
+
+cat << 'EOF' >> /etc/sysctl.conf
+vm.swappiness = 0
+kernel.sysrq = 1
+net.ipv4.neigh.default.gc_stale_time = 120
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.default.arp_announce = 2
+net.ipv4.conf.lo.arp_announce = 2
+net.ipv4.conf.all.arp_announce = 2
+net.ipv4.tcp_max_tw_buckets = 5000
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_synack_retries = 2
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_max_syn_backlog = 1024
+EOF
+sysctl -p
+
+cat << 'EOF' >> /etc/security/limits.conf
+* soft nofile 655360
+* hard nofile 131072
+* soft nproc 655350
+* hard nproc 655350
+* soft memlock unlimited
+* hard memlock unlimited
+EOF
+
+cat << 'EOF' > /etc/chrony.conf
+server 120.25.115.20 iburst
+server 203.107.6.88 iburst
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+EOF
+systemctl restart chronyd
+
+echo ">>> [7/7] 清理日誌、移除暫存目錄並清空紀錄..."
+
+# 押日期
+sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
+echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
+
+# 清理作業
+rm -rf /var/lib/cloud/* /var/log/cloud-init* /run/log/journal/*
+systemctl restart systemd-journald
+cat /dev/null > /etc/machine-id
+
+LOG_FILES=(boot.log cloud-init.log lastlog btmp wtmp secure cron maillog messages dnf.log dmesg)
+for log in "${LOG_FILES[@]}"; do
+    [ -f "/var/log/$log" ] && echo > "/var/log/$log"
+done
+
+# 清理暫存資料夾，保留 root 工具
+echo ">>> 正在清理暫存資料夾: $CURRENT_DIR"
+if [[ "$CURRENT_DIR" != "/root" ]]; then
+    rm -rf "$CURRENT_DIR"
+fi
+
+# 刪除腳本自身
+rm -f "$SCRIPT_PATH"
+
+echo "" > /etc/hostname
+echo "====================================================="
+echo " ✅ 初始化完成！"
+echo " 🛠️  SSH 更換工具已保留在: /root/Change_SSH_Port.sh"
+echo " ⚠️  系統未自動關機，手動確認後請執行 'init 0'。"
+echo "====================================================="
+
+echo > ~/.bash_history
+history -c
