@@ -1,45 +1,40 @@
 #!/bin/bash
 
 # =================================================================
-# Rocky Linux 9 / CentOS 鏡像自動化封裝腳本
+# Rocky Linux 9 / CentOS 鏡像封裝自動化腳本
 # =================================================================
 
-# 取得腳本自身的絕對路徑
-SCRIPT_PATH=$(readlink -f "$0")
+set -e  # 遇到錯誤立即停止
 
-# 檢查是否為 root 執行
-if [ "$(id -u)" -ne 0 ]; then
-    echo "請以 root 權限執行此腳本。"
-    exit 1
+# 檢查是否為 root
+if [ "$EUID" -ne 0 ]; then 
+  echo "請以 root 權限執行此腳本。"
+  exit 1
 fi
 
-echo ">>> 開始執行系統初始化與鏡像封裝流程..."
+echo ">>> [1/7] 正在設定系統基礎環境 (SSH, Hostname, SELinux)..."
 
-# --- 二、系統設定 ---
-echo "--- 設定 SSH ---"
-# 移除可能干擾的 sshd_config.d 設定並開啟 root/密碼登入
-rm -f /etc/ssh/sshd_config.d/*.conf
+# SSH 設定
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 systemctl restart sshd
 
-echo "--- 設定 Hostname ---"
+# Hostname 設定
 hostnamectl set-hostname localhost.domain.com
 sed -i '/^127.0.0.1/s/$/ localhost.domain.com/' /etc/hosts
 sed -i '/^::1/s/$/ localhost.domain.com/' /etc/hosts
 
-echo "--- 關閉 SELinux ---"
+# SELinux 關閉
 sed -i 's/^SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
-setenforce 0 2>/dev/null
+setenforce 0 || true
 
-echo "--- 設定防火牆 (預設開啟並設定後關閉) ---"
+# 防火牆設定 (安裝並停用)
 dnf install -y firewalld
 systemctl enable --now firewalld
 systemctl stop --now firewalld
 systemctl disable firewalld
 
-echo "--- 處理網路設定 (建立目錄與 DNS) ---"
-mkdir -p /etc/sysconfig/network-scripts/
+# DNS 設定
 sed -i '/^\[main\]/a dns=none' /etc/NetworkManager/NetworkManager.conf
 cat <<EOF > /etc/resolv.conf
 nameserver 8.8.8.8
@@ -48,41 +43,43 @@ nameserver 114.114.114.114
 EOF
 systemctl restart NetworkManager
 
-echo "--- 停用 cloud-init (初始設定階段) ---"
-systemctl disable --now cloud-init cloud-config cloud-final cloud-init-local
+echo ">>> [2/7] 正在優化鏡像源與語言包..."
 
-# --- 3. 優化與鏡像源設定 ---
-echo "--- 優化 DNF 加速與鏡像源 (Rocky 9) ---"
+# DNF 優化
 echo "fastestmirror=True" >> /etc/dnf/dnf.conf
-cp -r /etc/yum.repos.d/ /etc/yum.repos.d.backup
+cp -r /etc/yum.repos.d/ /etc/yum.repos.d.backup 2>/dev/null || true
 
-# 替換為阿里雲鏡像
+# Rocky 9 鏡像源切換 (使用阿里雲)
 sed -e 's|^mirrorlist=|#mirrorlist=|g' \
     -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=https://mirrors.aliyun.com/rockylinux|g' \
     -i /etc/yum.repos.d/rocky*.repo
 
 dnf clean all && dnf makecache -y
 
-echo "--- 設定語系 ---"
+# 語系設定
 dnf install -y glibc-langpack-en
+localectl set-locale LANG=en_US.UTF-8
 source /etc/locale.conf
 
-# --- 三、安裝套件 ---
-echo "--- 安裝常用工具套件 ---"
+echo ">>> [3/7] 正在安裝常用套件與工具..."
+
 yum -y update --exclude=kernel*
 yum -y install epel-release
 yum -y install python3-pip gcc gcc-c++ wget net-tools psmisc lsof bzip2 telnet nmap lrzsz rsync zip unzip \
                dos2unix gdisk parted cloud-utils-growpart e2fsprogs vim acpid qemu-guest-agent chrony
-
 pip3 install --upgrade pip
+
 systemctl enable --now acpid
 
-# --- 2. 安裝與設定 Cloud-init ---
-echo "--- 設定 Cloud-init 配置 ---"
+echo ">>> [4/7] 正在設定 Cloud-init 與 Qemu Guest Agent..."
+
+# Cloud-init 設定
 pip3 install urllib3==1.24 six
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
 sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
 
+# 寫入 Cloud-init network 選項
+if ! grep -q "network:" /etc/cloud/cloud.cfg; then
 cat >> /etc/cloud/cloud.cfg << "EOF"
 datasource:
   Ec2:
@@ -93,16 +90,14 @@ network:
   config: disabled
 lock_passwd: false
 EOF
+fi
 
-PYTHON_VAL=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-rm -rf /usr/lib/python${PYTHON_VAL}/site-packages/cloudinit/sources/__init__.pyc 2>/dev/null
-rm -rf /usr/lib/python${PYTHON_VAL}/site-packages/cloudinit/sources/__init__.pyo 2>/dev/null
+# 清理 Cloud-init 狀態
 rm -rf /var/lib/cloud/*
 rm -rf /var/log/cloud-init*
-systemctl enable cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service
+systemctl enable --now cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service
 
-# --- 3. 安裝 QGA 維護腳本 ---
-echo "--- 建立 QGA 自動維護服務 ---"
+# QGA 維護腳本建立
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-qga.sh
 #!/bin/bash
 while true; do
@@ -111,7 +106,7 @@ while true; do
     yum -y install qemu-guest-agent >> /dev/null
     sed -i '/^# FILTER_RPC_ARGS/s/^# //' /etc/sysconfig/qemu-ga
     systemctl restart qemu-guest-agent
-    systemctl enable qemu-guest-agent
+    systemctl enable --now qemu-guest-agent
   fi
 done
 EOF
@@ -121,18 +116,25 @@ cat << 'EOF' > /usr/lib/systemd/system/cdncloud-qga.service
 [Unit]
 Description=CDNCloud Qemu Guest Agent Monitor
 After=network.target
-
 [Service]
 Type=simple
 ExecStart=/usr/lib/systemd/system/cdncloud-qga.sh
-
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl enable --now cdncloud-qga.service
 
-# --- 四、系統優化 ---
-echo "--- 內核參數與資源限制優化 ---"
+# 自動擴容腳本建立
+mkdir -p /var/lib/cloud/scripts/per-instance/
+cat << 'EOF' > /var/lib/cloud/scripts/per-instance/mount.sh
+#!/bin/bash
+growpart /dev/vda 1 || true
+xfs_growfs /dev/vda1 || true
+EOF
+chmod +x /var/lib/cloud/scripts/per-instance/mount.sh
+
+echo ">>> [5/7] 正在執行系統核心優化與資源限制..."
+
 cat <<EOF >> /etc/sysctl.conf
 vm.swappiness = 0
 kernel.sysrq = 1
@@ -159,20 +161,8 @@ cat <<EOF >> /etc/security/limits.conf
 * hard memlock unlimited
 EOF
 
-# --- 五、建立自動掛載與擴容腳本 ---
-echo "--- 建立 Cloud-init 自定義執行腳本 ---"
-mkdir -p /var/lib/cloud/scripts/per-instance/
-cat << 'EOF' > /var/lib/cloud/scripts/per-instance/mount.sh
-#!/bin/bash
-source /etc/os-release
-VERSION=$VERSION_ID
-# 擴容根分區範例
-growpart /dev/vda 1 && xfs_growfs /dev/vda1
-EOF
-chmod +x /var/lib/cloud/scripts/per-instance/mount.sh
+echo ">>> [6/7] 正在進行時間同步 (Chrony)..."
 
-# --- 六、時間同步 ---
-echo "--- 設定 Chrony 時間同步 ---"
 cat <<EOF > /etc/chrony.conf
 server 120.25.115.20 iburst
 server 203.107.6.88 iburst
@@ -183,32 +173,38 @@ logdir /var/log/chrony
 EOF
 systemctl restart chronyd
 
-# --- 七、清理與封裝 ---
-echo "--- 封裝前最後清理 ---"
+echo ">>> [7/7] 正在清理日誌、紀錄並準備封裝..."
+
+# 押上封裝日期
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
+# 清理作業
 rm -rf /run/log/journal/*
 systemctl restart systemd-journald
-rm -f ~root/anaconda-ks.cfg
-rm -rf /var/log/anaconda
-rm -rf /tmp/* /var/tmp/*
+rm -f /root/anaconda-ks.cfg /root/original-ks.cfg 2>/dev/null
+rm -rf /var/log/anaconda /tmp/* /var/tmp/*
 cat /dev/null > /etc/machine-id
 
-LOGS=(boot.log cloud-init.log lastlog btmp wtmp secure cloud-init-output.log cron maillog spooler kdump.log messages yum.log)
-for logfile in "${LOGS[@]}"; do
-    echo > /var/log/$logfile 2>/dev/null
+# 批量清理日誌檔
+LOG_FILES=(boot.log cloud-init.log lastlog btmp wtmp secure cloud-init-output.log cron maillog spooler kdump.log messages yum.log dmesg)
+for log in "${LOG_FILES[@]}"; do
+    if [ -f "/var/log/$log" ]; then
+        echo > "/var/log/$log"
+    fi
 done
 
-# --- 八、刪除本腳本與歷史紀錄 ---
-echo ">>> 刪除初始化腳本與歷史紀錄..."
-rm -f "$SCRIPT_PATH"
-rm -rf ~root/.ssh/*
-rm -rf ~root/.pki/*
+# 清理個人紀錄
+rm -rf /root/.ssh/*
+rm -rf /root/.pki/*
 echo "" > /etc/hostname
-echo > ~/.bash_history
-echo > ~/.history
 
-echo ">>> 所有流程已完成。系統即將在 5 秒後關機以供封裝..."
-sleep 5
-history -c && init 0
+echo "====================================================="
+echo " 腳本執行完畢！系統將在 3 秒後自動關機。"
+echo " 關機後即可進行雲端鏡像 (Snapshot/Image) 封裝。"
+echo "====================================================="
+
+sleep 3
+echo > ~/.bash_history
+history -c
+init 0
