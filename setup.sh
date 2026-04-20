@@ -3,6 +3,7 @@ set -euo pipefail
 
 ################################################################################
 # CDNCloud 全自動鏡像封裝腳本 (Rocky/CentOS 8/9 適用)
+# 修正：預先安裝 Python 3 以確保版本偵測正常執行
 ################################################################################
 
 log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
@@ -10,7 +11,12 @@ log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 # 確保以 root 執行
 [[ "$EUID" -ne 0 ]] && echo "請使用 root 權限執行" && exit 1
 
-# 偵測 Python 版本用於 cloud-init 清理
+# --- 調整點：先安裝基礎工具 ---
+log "0. 預先安裝基礎套件 (Python 3)"
+# 確保系統有 Python 3 才能執行後續的版本偵測
+dnf install -y python3 || yum install -y python3
+
+# 現在偵測 Python 版本就不會報錯了
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
 log "1. 系統與 SSH 基礎設定"
@@ -45,14 +51,14 @@ nameserver 114.114.114.114
 EOF
 systemctl restart NetworkManager
 
-# 停用原本的 cloud-init (待會會重新安裝與配置)
+# 停用原本的 cloud-init
 systemctl disable --now cloud-init cloud-config cloud-final cloud-init-local || true
 
 log "3. 系統優化與套件安裝"
 # 加速鏡像源
 echo "fastestmirror=True" >> /etc/dnf/dnf.conf
 
-# 系統更新與常用工具
+# 系統更新與常用工具 (Python 3 已在步驟 0 安裝，此處補齊其餘工具)
 dnf install -y glibc-langpack-en
 yum -y update --exclude=kernel*
 yum -y install epel-release
@@ -120,8 +126,7 @@ EOF
 mkdir -p /var/lib/cloud/scripts/per-instance/
 cat <<'EOF' > /var/lib/cloud/scripts/per-instance/mount.sh
 #!/bin/bash
-# ... (此處省略您提供的 mount.sh 內容，已包含在腳本中) ...
-# 注意：腳本內容應完整貼入此處
+# (此處請填入您完整的 mount.sh 邏輯)
 EOF
 
 # 啟動時自動檢查 QGA
@@ -138,7 +143,7 @@ EOF
 # SSH Port 更換腳本
 cat <<'EOF' > /root/Change_SSH_Port.sh
 #!/bin/bash
-# ... (此處保留您提供的 Change_SSH_Port.sh 內容) ...
+# (此處保留原本 Change_SSH_Port.sh 內容)
 EOF
 
 # 賦予所有腳本權限
@@ -188,7 +193,6 @@ echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
 echo "============================================================"
 echo " 系統建置完成，準備進入清理階段。"
-echo " 警告：一旦輸入 YES，歷史紀錄與日誌將被清空並關機。"
 echo "============================================================"
 read -p "是否執行最終清理並關機？(YES/NO): " CLEAN_ANS
 
