@@ -87,8 +87,23 @@ cat <<EOF >> /etc/security/limits.conf
 * hard memlock unlimited
 EOF
 
-# 8. 寫入 QGA 相關腳本與服務 (照你的原路徑)
-log "8. 建立 QGA 服務與腳本..."
+# 8. 【新增】時間同步設置 (Chrony)
+log "8. 設定時間同步 (Chrony)..."
+dnf install chrony -y
+# 清除舊的 server 設定，寫入新的阿里雲與騰訊雲 NTP
+sed -i '/^server /d' /etc/chrony.conf
+sed -i '/^pool /d' /etc/chrony.conf
+cat <<EOF >> /etc/chrony.conf
+server 120.25.115.20 iburst
+server 203.107.6.88 iburst
+EOF
+systemctl enable --now chronyd
+systemctl restart chronyd
+log "檢查 Chrony 狀態："
+chronyc sources || true
+
+# 9. 寫入 QGA 相關腳本與服務
+log "9. 建立 QGA 服務與腳本..."
 cat <<'EOF' > /usr/lib/systemd/system/cdncloud-qga.sh
 #!/bin/bash
 while true; do
@@ -121,8 +136,8 @@ EOF
 systemctl daemon-reload
 systemctl enable --now cdncloud-qga.service
 
-# 9. 寫入 Cloud-init per-instance mount 腳本
-log "9. 建立自動掛載腳本..."
+# 10. 寫入 Cloud-init per-instance mount 腳本
+log "10. 建立自動掛載腳本..."
 mkdir -p /var/lib/cloud/scripts/per-instance/
 cat <<'EOF' > /var/lib/cloud/scripts/per-instance/mount.sh
 #!/bin/bash
@@ -202,8 +217,8 @@ fi
 EOF
 chmod +x /var/lib/cloud/scripts/per-instance/mount.sh
 
-# 10. 寫入 Cloud-init per-boot QGA 腳本
-log "10. 建立開機 QGA 啟動腳本..."
+# 11. 寫入 Cloud-init per-boot QGA 腳本
+log "11. 建立開機 QGA 啟動腳本..."
 mkdir -p /var/lib/cloud/scripts/per-boot/
 cat <<'EOF' > /var/lib/cloud/scripts/per-boot/install-qga.sh
 #!/bin/bash
@@ -218,8 +233,8 @@ fi
 EOF
 chmod +x /var/lib/cloud/scripts/per-boot/install-qga.sh
 
-# 11. 建立安全的 Change_SSH_Port.sh (加入 SELinux 防護)
-log "11. 建立 /root/Change_SSH_Port.sh..."
+# 12. 建立安全的 Change_SSH_Port.sh (加入 SELinux 防護)
+log "12. 建立 /root/Change_SSH_Port.sh..."
 cat << 'EOF' > /root/Change_SSH_Port.sh
 #!/bin/bash
 read -p "請輸入新的 SSH Port (1-65535): " NEW_PORT
@@ -236,7 +251,13 @@ systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 12. 封裝清理階段 (加入 SELinux 防護)
+# 13. 【新增】押上鏡像封裝日期
+log "13. 押上鏡像封裝日期到 /etc/os-release..."
+sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
+echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
+log "目前標記日期為: $(grep IMAGE_CREATION_DATE /etc/os-release)"
+
+# 14. 封裝清理階段
 echo "------------------------------------------------------------"
 read -p "是否執行封裝清理 (YES/NO): " CLEAN_ANS
 if [[ "$CLEAN_ANS" == "YES" ]]; then
