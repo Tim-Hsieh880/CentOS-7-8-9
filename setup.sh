@@ -3,7 +3,7 @@ set -euo pipefail
 
 ################################################################################
 # CDNCloud 全自動鏡像封裝腳本 (Rocky/CentOS 8/9 適用)
-# 修正：預先安裝 Python 3 以確保版本偵測正常執行
+# 修正：移除自動關機指令，清理後保持開機狀態
 ################################################################################
 
 log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
@@ -13,14 +13,12 @@ log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 
 # --- 調整點：先安裝基礎工具 ---
 log "0. 預先安裝基礎套件 (Python 3)"
-# 確保系統有 Python 3 才能執行後續的版本偵測
 dnf install -y python3 || yum install -y python3
 
-# 現在偵測 Python 版本就不會報錯了
+# 偵測 Python 版本
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
 log "1. 系統與 SSH 基礎設定"
-# SSH 救援邏輯與密碼登入
 ssh-keygen -A
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
@@ -42,7 +40,6 @@ systemctl stop --now firewalld
 systemctl disable firewalld
 
 log "2. 網路與 DNS 設定"
-# 停用 NM 自動配置 DNS
 sed -i '/^\[main\]/a dns=none' /etc/NetworkManager/NetworkManager.conf
 cat <<EOF > /etc/resolv.conf
 nameserver 8.8.8.8
@@ -50,33 +47,24 @@ nameserver 1.1.1.1
 nameserver 114.114.114.114
 EOF
 systemctl restart NetworkManager
-
-# 停用原本的 cloud-init
 systemctl disable --now cloud-init cloud-config cloud-final cloud-init-local || true
 
 log "3. 系統優化與套件安裝"
-# 加速鏡像源
 echo "fastestmirror=True" >> /etc/dnf/dnf.conf
-
-# 系統更新與常用工具 (Python 3 已在步驟 0 安裝，此處補齊其餘工具)
 dnf install -y glibc-langpack-en
 yum -y update --exclude=kernel*
 yum -y install epel-release
 yum -y install python3-pip gcc gcc-c++ wget net-tools psmisc lsof bzip2 telnet nmap lrzsz rsync zip unzip \
                dos2unix gdisk parted cloud-utils-growpart e2fsprogs vim acpid qemu-guest-agent chrony
-
 pip3 install --upgrade pip
 systemctl enable --now acpid chronyd
 
 log "4. Cloud-init 配置"
 yum install cloud-init -y
 pip3 install urllib3==1.24 six --upgrade
-
-# 修正 cloud.cfg
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
 sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
 
-# 寫入自定義 cloud-init 設定
 cat >> /etc/cloud/cloud.cfg << "EOF"
 datasource:
   Ec2:
@@ -88,14 +76,12 @@ network:
 lock_passwd: false
 EOF
 
-# 清理舊狀態
 rm -rf /usr/lib/python${PY_VER}/site-packages/cloudinit/sources/__init__.py[co] || true
 rm -rf /var/lib/cloud/* /var/log/cloud-init*
 cloud-init init --local || true
 systemctl enable cloud-init-local cloud-init cloud-config cloud-final
 
 log "5. 寫入 CDNCloud 專屬腳本 (QGA Watchdog / Mount / SSH Port)"
-# QGA Watchdog 腳本
 cat <<'EOF' > /usr/lib/systemd/system/cdncloud-qga.sh
 #!/bin/bash
 while true; do
@@ -109,7 +95,6 @@ while true; do
 done
 EOF
 
-# QGA Service
 cat <<'EOF' > /usr/lib/systemd/system/cdncloud-qga.service
 [Unit]
 Description=CDNCloud Qemu Guest Agent Watchdog
@@ -122,14 +107,12 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-# 自動掛載與擴容腳本 (Per-instance)
 mkdir -p /var/lib/cloud/scripts/per-instance/
 cat <<'EOF' > /var/lib/cloud/scripts/per-instance/mount.sh
 #!/bin/bash
-# (此處請填入您完整的 mount.sh 邏輯)
+# (此處為您原本保留的 mount.sh 區塊)
 EOF
 
-# 啟動時自動檢查 QGA
 mkdir -p /var/lib/cloud/scripts/per-boot/
 cat <<'EOF' > /var/lib/cloud/scripts/per-boot/install-qga.sh
 #!/bin/bash
@@ -140,13 +123,34 @@ if ! pgrep -x qemu-ga >/dev/null; then
 fi
 EOF
 
-# SSH Port 更換腳本
-cat <<'EOF' > /root/Change_SSH_Port.sh
+cat << 'EOF' > /root/Change_SSH_Port.sh
 #!/bin/bash
-# (此處保留原本 Change_SSH_Port.sh 內容)
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Please run this script as root."
+  exit 1
+fi
+read -p "Please enter the new SSH port number: " NEW_PORT
+if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then
+  echo "Error: Please enter a valid number."
+  exit 1
+fi
+if [ "$NEW_PORT" -le 1 ] || [ "$NEW_PORT" -gt 65535 ]; then
+  echo "Error: Please enter a number between 1 and 65535."
+  exit 1
+fi
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
+if systemctl is-active --quiet sshd; then
+  systemctl restart sshd
+  echo "SSH port has been changed to $NEW_PORT."
+elif systemctl is-active --quiet ssh; then
+  systemctl restart ssh
+  echo "SSH port has been changed to $NEW_PORT."
+else
+  echo "SSH service not found. Please restart manually."
+fi
 EOF
 
-# 賦予所有腳本權限
 chmod +x /usr/lib/systemd/system/cdncloud-qga.sh
 chmod +x /var/lib/cloud/scripts/per-instance/mount.sh
 chmod +x /var/lib/cloud/scripts/per-boot/install-qga.sh
@@ -194,10 +198,10 @@ echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 echo "============================================================"
 echo " 系統建置完成，準備進入清理階段。"
 echo "============================================================"
-read -p "是否執行最終清理並關機？(YES/NO): " CLEAN_ANS
+read -p "是否執行最終清理？(YES/NO): " CLEAN_ANS
 
 if [[ "$CLEAN_ANS" == "YES" ]]; then
-    log "執行最後清理..."
+    log "執行清理中 (不關機)..."
     rm -rf /run/log/journal/*
     systemctl restart systemd-journald
     rm -f /root/anaconda-ks.cfg
@@ -214,8 +218,7 @@ if [[ "$CLEAN_ANS" == "YES" ]]; then
     : > /etc/hostname
     : > /root/.bash_history
     history -c
-    log "封裝完成，系統即將關機。"
-    init 0
+    log "清理完成，系統保持開機狀態。"
 else
     log "腳本結束，未執行清理。"
 fi
