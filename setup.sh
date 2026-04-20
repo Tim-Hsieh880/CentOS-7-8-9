@@ -13,8 +13,15 @@ dnf install -y python3 policycoreutils-python-utils
 # 偵測 Python 版本
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
-# 2. SSH 救援與 Host Key 修復
-log "SSH 安全與 Host Key 修復..."
+# 2. SSH 救援、Host Key 修復與 SELinux 解除武裝
+log "SSH 安全、Host Key 修復與解除 SELinux 阻擋..."
+# 永久關閉 SELinux (下次開機生效)
+if [ -f /etc/selinux/config ]; then
+  sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
+fi
+# 暫時將 SELinux 設為寬容模式 (當下立即生效，防止重啟 SSH 報錯 status=255)
+setenforce 0 2>/dev/null || true
+
 ssh-keygen -A
 restorecon -Rv /etc/ssh || true
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
@@ -91,21 +98,25 @@ rm -f /etc/cloud/cloud.cfg.d/99-cdncloud-lock.cfg || true
 # 對於封裝模板，將 Cloud-init 設定為開機啟動，以便處理新機器的配置
 systemctl enable cloud-init-local cloud-init cloud-config cloud-final
 
-# 7. 產生 SSH Port 更換腳本 (僅加入 SSH 防錯)
+# 7. 產生 SSH Port 更換腳本 (加入 SELinux 與金鑰防錯)
 log "建立 /root/Change_SSH_Port.sh..."
 cat << 'EOF' > /root/Change_SSH_Port.sh
 #!/bin/bash
 read -p "請輸入新的 SSH Port (1-65535): " NEW_PORT
 if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then echo "錯誤：請輸入數字"; exit 1; fi
 sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
+
+# 防錯：暫時將 SELinux 設為寬容，防止修改 Port 後被暗殺 (status=255)
+setenforce 0 2>/dev/null || true
 # 確保金鑰與權限正常，再重啟 SSH
 ssh-keygen -A
 restorecon -Rv /etc/ssh || true
+
 systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 8. 封裝前清理 (僅加入 SSH 防錯)
+# 8. 封裝前清理 (加入 SSH 防錯)
 echo "------------------------------------------------------------"
 read -p "是否執行封裝清理 (YES/NO): " CLEAN_ANS
 if [[ "$CLEAN_ANS" == "YES" ]]; then
@@ -113,6 +124,7 @@ if [[ "$CLEAN_ANS" == "YES" ]]; then
   rm -f /etc/ssh/ssh_host_*_key*
   
   # 立即補回金鑰並重啟服務，避免 SSH 斷線或啟動失敗
+  setenforce 0 2>/dev/null || true
   ssh-keygen -A
   restorecon -Rv /etc/ssh || true
   systemctl restart sshd
