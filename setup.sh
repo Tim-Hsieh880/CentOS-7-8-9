@@ -100,7 +100,8 @@ systemctl restart chronyd
 
 # 9. 寫入 QGA 相關腳本與服務
 log "9. 建立 QGA 服務與腳本..."
-cat << 'EOF' > /usr/lib/systemd/system/cdncloud-qga.sh
+QGA_SH="/usr/lib/systemd/system/cdncloud-qga.sh"
+cat << 'EOF' > "$QGA_SH"
 #!/bin/bash
 while true; do
 sleep 300
@@ -116,9 +117,10 @@ else
 fi
 done
 EOF
-chmod +x /usr/lib/systemd/system/cdncloud-qga.sh
+chmod +x "$QGA_SH"
 
-cat << 'EOF' > /usr/lib/systemd/system/cdncloud-qga.service
+QGA_SVC="/usr/lib/systemd/system/cdncloud-qga.service"
+cat << 'EOF' > "$QGA_SVC"
 [Unit]
 Description=CDNCloud Qemu Guest Agent
 Documentation=http://www.cdncloud.com
@@ -134,8 +136,9 @@ systemctl enable --now cdncloud-qga.service
 
 # 10. 寫入 Cloud-init per-instance mount 腳本
 log "10. 建立自動掛載腳本 (mount.sh)..."
-mkdir -p /var/lib/cloud/scripts/per-instance/
-cat << 'EOF' > /var/lib/cloud/scripts/per-instance/mount.sh
+MOUNT_SH="/var/lib/cloud/scripts/per-instance/mount.sh"
+mkdir -p "$(dirname "$MOUNT_SH")"
+cat << 'EOF' > "$MOUNT_SH"
 #!/bin/bash
 
 # Check system version
@@ -211,12 +214,13 @@ else
     echo "Version-specific logic not implemented for this version."
 fi
 EOF
-chmod +x /var/lib/cloud/scripts/per-instance/mount.sh
+chmod +x "$MOUNT_SH"
 
 # 11. 寫入 Cloud-init per-boot QGA 腳本
 log "11. 建立開機 QGA 啟動腳本 (install-qga.sh)..."
-mkdir -p /var/lib/cloud/scripts/per-boot/
-cat << 'EOF' > /var/lib/cloud/scripts/per-boot/install-qga.sh
+QGA_BOOT_SH="/var/lib/cloud/scripts/per-boot/install-qga.sh"
+mkdir -p "$(dirname "$QGA_BOOT_SH")"
+cat << 'EOF' > "$QGA_BOOT_SH"
 #!/bin/bash
 if ps -ef | grep qemu-ga | egrep -v grep >/dev/null
 then
@@ -227,7 +231,7 @@ sed -ri '/^BLACKLIST_RPC/s#^##' /etc/sysconfig/qemu-ga
 systemctl enable --now qemu-guest-agent
 fi
 EOF
-chmod +x /var/lib/cloud/scripts/per-boot/install-qga.sh
+chmod +x "$QGA_BOOT_SH"
 
 # 12. 建立安全的 Change_SSH_Port.sh
 log "12. 建立 /root/Change_SSH_Port.sh..."
@@ -251,7 +255,7 @@ sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 log "目前標記日期為: $(grep IMAGE_CREATION_DATE /etc/os-release)"
 
-# 14. 封裝清理階段
+# 14. 封裝清理階段 (已修正安全清理規則)
 echo "------------------------------------------------------------"
 read -p "是否執行封裝清理 (YES/NO): " CLEAN_ANS
 if [[ "$CLEAN_ANS" == "YES" ]]; then
@@ -265,11 +269,14 @@ if [[ "$CLEAN_ANS" == "YES" ]]; then
   systemctl restart sshd
 
   cat /dev/null > /etc/machine-id
-  rm -rf /var/lib/cloud/* /var/log/cloud-init*
+  
+  # 【修正】：只刪除機器實例紀錄，絕對不刪除 /var/lib/cloud/scripts/
+  rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
+  
   rm -rf /tmp/* /var/tmp/*
   find /var/log -type f -exec cp /dev/null {} \;
   history -c
-  log "清理完成，SSH 服務已自動恢復，現在可以安全封裝鏡像。"
+  log "清理完成，SSH 服務已自動恢復，且客製化 scripts 已安全保留！現在可以安全封裝鏡像。"
 fi
 
 echo "------------------------------------------------------------"
