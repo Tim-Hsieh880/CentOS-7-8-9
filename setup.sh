@@ -14,7 +14,6 @@ log "2. SSH 安全、Host Key 修復與解除 SELinux 阻擋..."
 if [ -f /etc/selinux/config ]; then
   sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
 fi
-# 暫時將 SELinux 設為寬容模式，防止接下來重啟 SSH 報錯
 setenforce 0 2>/dev/null || true
 
 ssh-keygen -A
@@ -76,64 +75,4 @@ EOF
 sysctl -p
 
 # 7. 寫入 /etc/security/limits.conf
-log "7. 寫入 Limits 設定..."
-cat << 'EOF' >> /etc/security/limits.conf
-
-* soft nofile 655360
-* hard nofile 131072
-* soft nproc 655350
-* hard nproc 655350
-* soft memlock unlimited
-* hard memlock unlimited
-EOF
-
-# 8. 時間同步設置 (Chrony)
-log "8. 設定時間同步 (Chrony)..."
-dnf install chrony -y
-sed -i '/^server /d' /etc/chrony.conf
-sed -i '/^pool /d' /etc/chrony.conf
-cat << 'EOF' >> /etc/chrony.conf
-server 120.25.115.20 iburst
-server 203.107.6.88 iburst
-EOF
-systemctl enable --now chronyd
-systemctl restart chronyd
-
-# 9. 寫入 QGA 相關腳本與服務
-log "9. 建立 QGA 服務與腳本..."
-cat << 'EOF' > /usr/lib/systemd/system/cdncloud-qga.sh
-#!/bin/bash
-while true; do
-sleep 300
-if ps -ef | grep qemu-ga | egrep -v grep >/dev/null
-then
- echo " qemu-guest-agent is started!" > /dev/null
-else
- yum -y install qemu-guest-agent >> /dev/null
- sed -i '/^# FILTER_RPC_ARGS/s/^# //' /etc/sysconfig/qemu-ga
- systemctl stop qemu-guest-agent
- systemctl start qemu-guest-agent
- systemctl enable --now qemu-guest-agent
-fi
-done
-EOF
-chmod +x /usr/lib/systemd/system/cdncloud-qga.sh
-
-cat << 'EOF' > /usr/lib/systemd/system/cdncloud-qga.service
-[Unit]
-Description=CDNCloud Qemu Guest Agent
-Documentation=http://www.cdncloud.com
-After=network.target
-[Service]
-Type=simple
-ExecStart=/usr/lib/systemd/system/cdncloud-qga.sh
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable --now cdncloud-qga.service
-
-# 10. 寫入 Cloud-init per-instance mount 腳本
-log "10. 建立自動掛載腳本 (mount.sh)..."
-mkdir -p /var/lib/cloud/scripts/per-instance/
-cat << 'EOF' > /var/lib/cloud/
+log "7.
