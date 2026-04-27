@@ -3,14 +3,54 @@ set -euo pipefail
 
 log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 
-# 1. 確保權限與安裝 Python
+# 1. 確保權限與安裝基礎工具
 [[ "$EUID" -ne 0 ]] && echo "請使用 root 執行" && exit 1
-log "1. 準備基礎工具..."
-dnf install -y python3 policycoreutils-python-utils
+
+log "1. 系統更新與準備基礎工具 (EPEL, 網管套件, Firewalld, Acpid)..."
+
+# 執行系統更新，但排除內核升級，確保雲端映像檔穩定性
+log "執行系統更新 (排除 kernel)..."
+dnf -y update --exclude=kernel*
+
+# 安裝 EPEL 擴充套件庫
+dnf install -y epel-release
+
+# 安裝指定的所有網管、開發、磁碟工具，以及腳本必備元件
+dnf install -y \
+    python3 python3-pip gcc gcc-c++ wget net-tools psmisc lsof bzip2 \
+    telnet nmap lrzsz rsync zip unzip dos2unix gdisk parted \
+    cloud-utils-growpart e2fsprogs vim \
+    policycoreutils-python-utils firewalld acpid
+
+# 升級 pip
+pip3 install --upgrade pip
+
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
-# 2. SSH 救援、Host Key 修復與 SELinux 解除武裝
-log "2. SSH 安全、Host Key 修復與解除 SELinux 阻擋..."
+# 2. 系統核心守護進程 (Acpid & Firewalld) 狀態檢查與配置
+log "2. 系統服務 (Acpid & Firewalld) 配置..."
+
+# Acpid 配置
+systemctl enable --now acpid
+log "檢查 Acpid 運行狀態："
+systemctl status acpid --no-pager || true
+
+# Firewalld 配置
+systemctl enable --now firewalld
+log "檢查 Firewalld 運行狀態："
+systemctl status firewalld --no-pager || true
+
+# 確保預設允許 SSH 服務，防止未來客戶開啟防火牆後被鎖定
+firewall-cmd --permanent --add-service=ssh > /dev/null 2>&1
+firewall-cmd --reload > /dev/null 2>&1
+
+# 為鏡像封裝準備：暫時關閉並停用防火牆，由客戶自行決定何時開啟
+systemctl stop --now firewalld
+systemctl disable firewalld
+log "Firewalld 已設為預設關閉 (封裝就緒狀態)。"
+
+# 3. SSH 救援、Host Key 修復與 SELinux 解除武裝
+log "3. SSH 安全與救援初始化..."
 if [ -f /etc/selinux/config ]; then
   sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
 fi
@@ -22,21 +62,19 @@ sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/ssh
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl restart sshd
 
-# 3. 寫入 /etc/resolv.conf
-log "3. 寫入 DNS 設定..."
+# 4. 網路、DNS 與 DNF 優化
+log "4. 配置 DNS 與 DNF..."
 cat << 'EOF' > /etc/resolv.conf
 nameserver 8.8.8.8
 nameserver 1.1.1.1
 nameserver 114.114.114.114
 EOF
 
-# 4. 寫入 /etc/dnf/dnf.conf
-log "4. 寫入 DNF 設定..."
 if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
   echo "fastestmirror=True" >> /etc/dnf/dnf.conf
 fi
 
-# 5. 寫入 /etc/cloud/cloud.cfg
+# 5. 寫入 Cloud-init 設定
 log "5. 寫入 Cloud-init 設定..."
 dnf install -y cloud-init
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
@@ -44,20 +82,16 @@ sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
 cat << 'EOF' >> /etc/cloud/cloud.cfg
 
 datasource:
-  Ec2:
-    max_wait: 5
-  CloudStack:
-    max_wait: 5
+  Ec2: { max_wait: 5 }
+  CloudStack: { max_wait: 5 }
 network:
   config: disabled
-
 lock_passwd: false
 EOF
 
-# 6. 寫入 /etc/sysctl.conf
-log "6. 寫入 Sysctl 設定..."
+# 6. 系統核心與資源限制優化
+log "6. 寫入 Sysctl 與 Limits 設定..."
 cat << 'EOF' >> /etc/sysctl.conf
-
 vm.swappiness = 0
 kernel.sysrq = 1
 net.ipv4.neigh.default.gc_stale_time = 120
@@ -74,10 +108,7 @@ net.ipv4.tcp_max_syn_backlog = 1024
 EOF
 sysctl -p
 
-# 7. 寫入 /etc/security/limits.conf
-log "7. 寫入 Limits 設定..."
 cat << 'EOF' >> /etc/security/limits.conf
-
 * soft nofile 655360
 * hard nofile 131072
 * soft nproc 655350
@@ -86,11 +117,10 @@ cat << 'EOF' >> /etc/security/limits.conf
 * hard memlock unlimited
 EOF
 
-# 8. 時間同步設置 (Chrony)
-log "8. 設定時間同步 (Chrony)..."
+# 7. 時間同步 (Chrony)
+log "7. 設定時間同步 (Chrony)..."
 dnf install chrony -y
 sed -i '/^server /d' /etc/chrony.conf
-sed -i '/^pool /d' /etc/chrony.conf
 cat << 'EOF' >> /etc/chrony.conf
 server 120.25.115.20 iburst
 server 203.107.6.88 iburst
@@ -98,23 +128,19 @@ EOF
 systemctl enable --now chronyd
 systemctl restart chronyd
 
-# 9. 寫入 QGA 相關腳本與服務
-log "9. 建立 QGA 服務與腳本..."
+# 8. 建立客製化腳本 (QGA / Mount / SSH Port)
+log "8. 建立 QGA Watchdog 與客製化腳本..."
+# QGA Watchdog
 QGA_SH="/usr/lib/systemd/system/cdncloud-qga.sh"
 cat << 'EOF' > "$QGA_SH"
 #!/bin/bash
 while true; do
-sleep 300
-if ps -ef | grep qemu-ga | egrep -v grep >/dev/null
-then
- echo " qemu-guest-agent is started!" > /dev/null
-else
- yum -y install qemu-guest-agent >> /dev/null
- sed -i '/^# FILTER_RPC_ARGS/s/^# //' /etc/sysconfig/qemu-ga
- systemctl stop qemu-guest-agent
- systemctl start qemu-guest-agent
- systemctl enable --now qemu-guest-agent
-fi
+  sleep 300
+  if ! pgrep -x qemu-ga >/dev/null; then
+    dnf install -y qemu-guest-agent >> /dev/null 2>&1
+    systemctl restart qemu-guest-agent
+    systemctl enable --now qemu-guest-agent
+  fi
 done
 EOF
 chmod +x "$QGA_SH"
@@ -122,8 +148,7 @@ chmod +x "$QGA_SH"
 QGA_SVC="/usr/lib/systemd/system/cdncloud-qga.service"
 cat << 'EOF' > "$QGA_SVC"
 [Unit]
-Description=CDNCloud Qemu Guest Agent
-Documentation=http://www.cdncloud.com
+Description=CDNCloud QGA Watchdog
 After=network.target
 [Service]
 Type=simple
@@ -134,8 +159,7 @@ EOF
 systemctl daemon-reload
 systemctl enable --now cdncloud-qga.service
 
-# 10. 寫入 Cloud-init per-instance mount 腳本
-log "10. 建立自動掛載腳本 (mount.sh)..."
+# Cloud-init Scripts
 MOUNT_SH="/var/lib/cloud/scripts/per-instance/mount.sh"
 mkdir -p "$(dirname "$MOUNT_SH")"
 cat << 'EOF' > "$MOUNT_SH"
@@ -217,7 +241,6 @@ EOF
 chmod +x "$MOUNT_SH"
 
 # 11. 寫入 Cloud-init per-boot QGA 腳本
-log "11. 建立開機 QGA 啟動腳本 (install-qga.sh)..."
 QGA_BOOT_SH="/var/lib/cloud/scripts/per-boot/install-qga.sh"
 mkdir -p "$(dirname "$QGA_BOOT_SH")"
 cat << 'EOF' > "$QGA_BOOT_SH"
@@ -233,52 +256,40 @@ fi
 EOF
 chmod +x "$QGA_BOOT_SH"
 
-# 12. 建立安全的 Change_SSH_Port.sh
-log "12. 建立 /root/Change_SSH_Port.sh..."
+# SSH Port Change Script (加上 Firewall 自動開放規則)
 cat << 'EOF' > /root/Change_SSH_Port.sh
 #!/bin/bash
-read -p "請輸入新的 SSH Port (1-65535): " NEW_PORT
-if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then echo "錯誤：請輸入數字"; exit 1; fi
+read -p "請輸入新的 SSH Port: " NEW_PORT
+if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then echo "錯誤"; exit 1; fi
 sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
-
-# 防錯：暫時將 SELinux 設為寬容，防止修改 Port 後被暗殺 (status=255)
-setenforce 0 2>/dev/null || true
+if systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --add-port=$NEW_PORT/tcp
+    firewall-cmd --reload
+fi
 ssh-keygen -A
 restorecon -Rv /etc/ssh || true
 systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 13. 押上鏡像封裝日期
-log "13. 押上鏡像封裝日期到 /etc/os-release..."
+# 9. 封裝日期與清理
+log "9. 押上日期與執行最終清理..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
-log "目前標記日期為: $(grep IMAGE_CREATION_DATE /etc/os-release)"
 
-# 14. 封裝清理階段 (已修正安全清理規則)
 echo "------------------------------------------------------------"
 read -p "是否執行封裝清理 (YES/NO): " CLEAN_ANS
 if [[ "$CLEAN_ANS" == "YES" ]]; then
-  log "執行清理流程..."
-  
   rm -f /etc/ssh/ssh_host_*_key*
-  
   setenforce 0 2>/dev/null || true
   ssh-keygen -A
   restorecon -Rv /etc/ssh || true
   systemctl restart sshd
 
   cat /dev/null > /etc/machine-id
-  
-  # 【修正】：只刪除機器實例紀錄，絕對不刪除 /var/lib/cloud/scripts/
   rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
-  
   rm -rf /tmp/* /var/tmp/*
   find /var/log -type f -exec cp /dev/null {} \;
   history -c
-  log "清理完成，SSH 服務已自動恢復，且客製化 scripts 已安全保留！現在可以安全封裝鏡像。"
+  log "清理完成，鏡像封裝就緒！"
 fi
-
-echo "------------------------------------------------------------"
-log "時間同步狀態檢查："
-chronyc sources || true
