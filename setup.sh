@@ -3,10 +3,28 @@ set -euo pipefail
 
 log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 
-# 1. 確保權限與安裝基礎工具
+# 1. 確保權限與配置清華大學軟體源 (TUNA)
 [[ "$EUID" -ne 0 ]] && echo "請使用 root 執行" && exit 1
 
-log "1. 系統更新與準備基礎工具 (EPEL, 網管套件, Firewalld, Acpid)..."
+log "1. 配置系統軟體源 (替換為清華大學鏡像)..."
+# 備份原有的 repo 設定
+cp -r /etc/yum.repos.d/ /etc/yum.repos.d.backup
+
+# 修改 Rocky 8 鏡像源配置為清華大學 (TUNA)，捨棄阿里雲
+sed -e 's|^mirrorlist=|#mirrorlist=|g' \
+    -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=https://mirrors.tuna.tsinghua.edu.cn/rocky|g' \
+    -i.bak \
+    /etc/yum.repos.d/Rocky-*.repo
+
+# 清理並重新建立 DNF 與 YUM 快取
+log "清理並重建軟體源快取..."
+dnf clean all && dnf makecache
+dnf repolist
+yum clean all && yum makecache
+yum repolist
+
+# 2. 系統更新與安裝基礎工具
+log "2. 系統更新與準備基礎工具 (EPEL, 網管套件, Firewalld, Acpid)..."
 
 # 執行系統更新，但排除內核升級，確保雲端映像檔穩定性
 log "執行系統更新 (排除 kernel)..."
@@ -27,8 +45,8 @@ pip3 install --upgrade pip
 
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
-# 2. 系統核心守護進程 (Acpid & Firewalld) 狀態檢查與配置
-log "2. 系統服務 (Acpid & Firewalld) 配置..."
+# 3. 系統核心守護進程 (Acpid & Firewalld) 狀態檢查與配置
+log "3. 系統服務 (Acpid & Firewalld) 配置..."
 
 # Acpid 配置
 systemctl enable --now acpid
@@ -49,8 +67,8 @@ systemctl stop --now firewalld
 systemctl disable firewalld
 log "Firewalld 已設為預設關閉 (封裝就緒狀態)。"
 
-# 3. SSH 救援、Host Key 修復與 SELinux 解除武裝
-log "3. SSH 安全與救援初始化..."
+# 4. SSH 救援、Host Key 修復與 SELinux 解除武裝
+log "4. SSH 安全與救援初始化..."
 if [ -f /etc/selinux/config ]; then
   sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
 fi
@@ -62,8 +80,8 @@ sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/ssh
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl restart sshd
 
-# 4. 網路、DNS 與 DNF 優化
-log "4. 配置 DNS 與 DNF..."
+# 5. 網路、DNS 與 DNF 優化
+log "5. 配置 DNS 與 DNF..."
 cat << 'EOF' > /etc/resolv.conf
 nameserver 8.8.8.8
 nameserver 1.1.1.1
@@ -74,8 +92,8 @@ if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
   echo "fastestmirror=True" >> /etc/dnf/dnf.conf
 fi
 
-# 5. 寫入 Cloud-init 設定
-log "5. 寫入 Cloud-init 設定..."
+# 6. 寫入 Cloud-init 設定
+log "6. 寫入 Cloud-init 設定..."
 dnf install -y cloud-init
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
 sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
@@ -89,8 +107,8 @@ network:
 lock_passwd: false
 EOF
 
-# 6. 系統核心與資源限制優化
-log "6. 寫入 Sysctl 與 Limits 設定..."
+# 7. 系統核心與資源限制優化
+log "7. 寫入 Sysctl 與 Limits 設定..."
 cat << 'EOF' >> /etc/sysctl.conf
 vm.swappiness = 0
 kernel.sysrq = 1
@@ -117,8 +135,8 @@ cat << 'EOF' >> /etc/security/limits.conf
 * hard memlock unlimited
 EOF
 
-# 7. 時間同步 (Chrony)
-log "7. 設定時間同步 (Chrony)..."
+# 8. 時間同步 (Chrony)
+log "8. 設定時間同步 (Chrony)..."
 dnf install chrony -y
 sed -i '/^server /d' /etc/chrony.conf
 cat << 'EOF' >> /etc/chrony.conf
@@ -128,8 +146,8 @@ EOF
 systemctl enable --now chronyd
 systemctl restart chronyd
 
-# 8. 建立客製化腳本 (QGA / Mount / SSH Port)
-log "8. 建立 QGA Watchdog 與客製化腳本..."
+# 9. 建立客製化腳本 (QGA / Mount / SSH Port)
+log "9. 建立 QGA Watchdog 與客製化腳本..."
 # QGA Watchdog
 QGA_SH="/usr/lib/systemd/system/cdncloud-qga.sh"
 cat << 'EOF' > "$QGA_SH"
@@ -240,7 +258,7 @@ fi
 EOF
 chmod +x "$MOUNT_SH"
 
-# 11. 寫入 Cloud-init per-boot QGA 腳本
+# 10. 寫入 Cloud-init per-boot QGA 腳本
 QGA_BOOT_SH="/var/lib/cloud/scripts/per-boot/install-qga.sh"
 mkdir -p "$(dirname "$QGA_BOOT_SH")"
 cat << 'EOF' > "$QGA_BOOT_SH"
@@ -272,8 +290,8 @@ systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 9. 封裝日期與清理
-log "9. 押上日期與執行最終清理..."
+# 11. 封裝日期與清理
+log "11. 押上日期與執行最終清理..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
@@ -287,8 +305,14 @@ if [[ "$CLEAN_ANS" == "YES" ]]; then
   systemctl restart sshd
 
   cat /dev/null > /etc/machine-id
+  
+  # 基礎實例清理 (保留 scripts)
   rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
   rm -rf /tmp/* /var/tmp/*
+  
+  # 安全深層清理：只刪除 Cloud-init 產生的 Python 編譯快取檔，不傷原始碼
+  find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
   find /var/log -type f -exec cp /dev/null {} \;
   history -c
   log "清理完成，鏡像封裝就緒！"
