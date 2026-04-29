@@ -7,40 +7,31 @@ log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 [[ "$EUID" -ne 0 ]] && echo "請使用 root 執行" && exit 1
 
 log "1. 配置系統軟體源 (替換為清華大學鏡像)..."
-# 備份原有的 repo 設定
 cp -r /etc/yum.repos.d/ /etc/yum.repos.d.backup
 
-# 修改 Rocky 8 鏡像源配置為清華大學 (TUNA)，捨棄阿里雲
 sed -e 's|^mirrorlist=|#mirrorlist=|g' \
     -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=https://mirrors.tuna.tsinghua.edu.cn/rocky|g' \
     -i.bak \
     /etc/yum.repos.d/Rocky-*.repo
 
-# 清理並重新建立 DNF 與 YUM 快取
 log "清理並重建軟體源快取..."
 dnf clean all && dnf makecache
 dnf repolist
-yum clean all && yum makecache
-yum repolist
 
 # 2. 系統更新與安裝基礎工具
 log "2. 系統更新與準備基礎工具 (EPEL, 網管套件, Firewalld, Acpid)..."
 
-# 執行系統更新，但排除內核升級，確保雲端映像檔穩定性
 log "執行系統更新 (排除 kernel)..."
 dnf -y update --exclude=kernel*
 
-# 安裝 EPEL 擴充套件庫
 dnf install -y epel-release
 
-# 安裝指定的所有網管、開發、磁碟工具，以及腳本必備元件
 dnf install -y \
     python3 python3-pip gcc gcc-c++ wget net-tools psmisc lsof bzip2 \
     telnet nmap lrzsz rsync zip unzip dos2unix gdisk parted \
     cloud-utils-growpart e2fsprogs vim \
     policycoreutils-python-utils firewalld acpid
 
-# 升級 pip
 pip3 install --upgrade pip
 
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
@@ -48,21 +39,17 @@ PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_i
 # 3. 系統核心守護進程 (Acpid & Firewalld) 狀態檢查與配置
 log "3. 系統服務 (Acpid & Firewalld) 配置..."
 
-# Acpid 配置
 systemctl enable --now acpid
 log "檢查 Acpid 運行狀態："
 systemctl status acpid --no-pager || true
 
-# Firewalld 配置
 systemctl enable --now firewalld
 log "檢查 Firewalld 運行狀態："
 systemctl status firewalld --no-pager || true
 
-# 確保預設允許 SSH 服務，防止未來客戶開啟防火牆後被鎖定
 firewall-cmd --permanent --add-service=ssh > /dev/null 2>&1
 firewall-cmd --reload > /dev/null 2>&1
 
-# 為鏡像封裝準備：暫時關閉並停用防火牆，由客戶自行決定何時開啟
 systemctl stop --now firewalld
 systemctl disable firewalld
 log "Firewalld 已設為預設關閉 (封裝就緒狀態)。"
@@ -80,8 +67,32 @@ sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/ssh
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl restart sshd
 
-# 5. 網路、DNS 與 DNF 優化
-log "5. 配置 DNS 與 DNF..."
+# 5. 【新增】統一網卡設定為 eth0 與鎖定網路配置
+log "5. 統一網卡命名為 eth0 與網路配置..."
+# 刪除所有 ens 開頭的舊設定並建立標準 eth0 設定
+rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
+cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
+TYPE=Ethernet
+BOOTPROTO=dhcp
+DEVICE=eth0
+ONBOOT=yes
+USERCTL=no
+EOF
+
+# 停用 Cloud-Init 的網路自動管理 (防止重啟後被覆蓋)
+mkdir -p /etc/cloud/cloud.cfg.d/
+echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+
+# 注入核心參數 (net.ifnames=0 與 biosdevname=0)
+# 加入防重複寫入機制，確保 GRUB_CMDLINE_LINUX 乾淨
+if ! grep -q "net.ifnames=0" /etc/default/grub; then
+    sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="net.ifnames=0 biosdevname=0 /' /etc/default/grub
+    # 更新 GRUB 配置使其永久生效
+    grub2-mkconfig -o /boot/grub2/grub.cfg || true
+fi
+
+# 6. 配置 DNS 與 DNF 優化
+log "6. 配置 DNS 與 DNF..."
 cat << 'EOF' > /etc/resolv.conf
 nameserver 8.8.8.8
 nameserver 1.1.1.1
@@ -92,8 +103,8 @@ if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
   echo "fastestmirror=True" >> /etc/dnf/dnf.conf
 fi
 
-# 6. 寫入 Cloud-init 設定
-log "6. 寫入 Cloud-init 設定..."
+# 7. 寫入 Cloud-init 設定
+log "7. 寫入 Cloud-init 設定..."
 dnf install -y cloud-init
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
 sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
@@ -102,13 +113,11 @@ cat << 'EOF' >> /etc/cloud/cloud.cfg
 datasource:
   Ec2: { max_wait: 5 }
   CloudStack: { max_wait: 5 }
-network:
-  config: disabled
 lock_passwd: false
 EOF
 
-# 7. 系統核心與資源限制優化
-log "7. 寫入 Sysctl 與 Limits 設定..."
+# 8. 系統核心與資源限制優化
+log "8. 寫入 Sysctl 與 Limits 設定..."
 cat << 'EOF' >> /etc/sysctl.conf
 vm.swappiness = 0
 kernel.sysrq = 1
@@ -135,9 +144,8 @@ cat << 'EOF' >> /etc/security/limits.conf
 * hard memlock unlimited
 EOF
 
-# 8. 時間同步 (Chrony)
-log "8. 設定時間同步 (Chrony)..."
-dnf install chrony -y
+# 9. 時間同步 (Chrony)
+log "9. 設定時間同步 (Chrony)..."
 sed -i '/^server /d' /etc/chrony.conf
 cat << 'EOF' >> /etc/chrony.conf
 server 120.25.115.20 iburst
@@ -146,8 +154,8 @@ EOF
 systemctl enable --now chronyd
 systemctl restart chronyd
 
-# 9. 建立客製化腳本 (QGA / Mount / SSH Port)
-log "9. 建立 QGA Watchdog 與客製化腳本..."
+# 10. 建立客製化腳本 (QGA / Mount / SSH Port)
+log "10. 建立 QGA Watchdog 與客製化腳本..."
 # QGA Watchdog
 QGA_SH="/usr/lib/systemd/system/cdncloud-qga.sh"
 cat << 'EOF' > "$QGA_SH"
@@ -258,7 +266,7 @@ fi
 EOF
 chmod +x "$MOUNT_SH"
 
-# 10. 寫入 Cloud-init per-boot QGA 腳本
+# 11. 寫入 Cloud-init per-boot QGA 腳本
 QGA_BOOT_SH="/var/lib/cloud/scripts/per-boot/install-qga.sh"
 mkdir -p "$(dirname "$QGA_BOOT_SH")"
 cat << 'EOF' > "$QGA_BOOT_SH"
@@ -274,7 +282,7 @@ fi
 EOF
 chmod +x "$QGA_BOOT_SH"
 
-# SSH Port Change Script (加上 Firewall 自動開放規則)
+# SSH Port Change Script
 cat << 'EOF' > /root/Change_SSH_Port.sh
 #!/bin/bash
 read -p "請輸入新的 SSH Port: " NEW_PORT
@@ -290,8 +298,8 @@ systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 11. 封裝日期與清理
-log "11. 押上日期與執行最終清理..."
+# 12. 封裝日期與清理
+log "12. 押上日期與執行最終清理..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
@@ -310,7 +318,7 @@ if [[ "$CLEAN_ANS" == "YES" ]]; then
   rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
   rm -rf /tmp/* /var/tmp/*
   
-  # 安全深層清理：只刪除 Cloud-init 產生的 Python 編譯快取檔，不傷原始碼
+  # 安全深層清理：只刪除 Cloud-init 產生的 Python 編譯快取檔
   find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
   find /var/log -type f -exec cp /dev/null {} \;
