@@ -7,12 +7,9 @@ log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 [[ "$EUID" -ne 0 ]] && echo "請使用 root 執行" && exit 1
 
 log "1. 配置系統軟體源 (恢復官方源，捨棄無效的清華源)..."
-# 如果之前有備份，將其還原以修復被清華源弄壞的配置
 if [ -d "/etc/yum.repos.d.backup" ]; then
     \cp -rf /etc/yum.repos.d.backup/* /etc/yum.repos.d/
-    log "已從備份成功還原為官方源！"
 else
-    # 預防性備份
     cp -r /etc/yum.repos.d/ /etc/yum.repos.d.backup
 fi
 
@@ -56,8 +53,8 @@ systemctl stop --now firewalld
 systemctl disable firewalld
 log "Firewalld 已設為預設關閉 (封裝就緒狀態)。"
 
-# 4. SSH 救援、Host Key 修復與 SELinux 解除武裝
-log "4. SSH 安全與救援初始化..."
+# 4. SSH 救援、Host Key 修復與基礎帳號安全
+log "4. SSH 安全與基礎帳號防護..."
 if [ -f /etc/selinux/config ]; then
   sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
 fi
@@ -68,6 +65,12 @@ restorecon -Rv /etc/ssh || true
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl restart sshd
+
+# 【新增】禁用預設 rocky 帳號，加強安全性
+if id rocky &>/dev/null; then
+    usermod -L -s /sbin/nologin rocky
+    log "帳號 rocky 已成功禁用 (密碼鎖定且 Shell 已關閉)"
+fi
 
 # 5. 統一網卡設定為 eth0 與鎖定網路配置
 log "5. 統一網卡命名為 eth0 與網路配置..."
@@ -114,7 +117,7 @@ lock_passwd: false
 EOF
 
 # 8. 系統核心與資源限制優化
-log "8. 寫入 Sysctl 與 Limits 設定..."
+log "8. 寫入 Sysctl、Limits 與環境變數設定..."
 cat << 'EOF' >> /etc/sysctl.conf
 vm.swappiness = 0
 kernel.sysrq = 1
@@ -140,6 +143,11 @@ cat << 'EOF' >> /etc/security/limits.conf
 * soft memlock unlimited
 * hard memlock unlimited
 EOF
+
+# 【新增】為 history 指令加上時間戳記
+echo 'export HISTTIMEFORMAT="%F %T "' > /etc/profile.d/history_time.sh
+source /etc/profile.d/history_time.sh || true
+log "指令歷史紀錄 (History) 已加入時間戳記"
 
 # 9. 時間同步 (Chrony)
 log "9. 設定時間同步 (Chrony)..."
