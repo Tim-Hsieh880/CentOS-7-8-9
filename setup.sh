@@ -3,16 +3,18 @@ set -euo pipefail
 
 log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 
-# 1. 確保權限與配置清華大學軟體源 (TUNA)
+# 1. 確保權限與配置官方軟體源
 [[ "$EUID" -ne 0 ]] && echo "請使用 root 執行" && exit 1
 
-log "1. 配置系統軟體源 (替換為清華大學鏡像)..."
-cp -r /etc/yum.repos.d/ /etc/yum.repos.d.backup
-
-sed -e 's|^mirrorlist=|#mirrorlist=|g' \
-    -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir|baseurl=https://mirrors.tuna.tsinghua.edu.cn/rocky|g' \
-    -i.bak \
-    /etc/yum.repos.d/Rocky-*.repo
+log "1. 配置系統軟體源 (恢復官方源，捨棄無效的清華源)..."
+# 如果之前有備份，將其還原以修復被清華源弄壞的配置
+if [ -d "/etc/yum.repos.d.backup" ]; then
+    \cp -rf /etc/yum.repos.d.backup/* /etc/yum.repos.d/
+    log "已從備份成功還原為官方源！"
+else
+    # 預防性備份
+    cp -r /etc/yum.repos.d/ /etc/yum.repos.d.backup
+fi
 
 log "清理並重建軟體源快取..."
 dnf clean all && dnf makecache
@@ -67,9 +69,8 @@ sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/ssh
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl restart sshd
 
-# 5. 【新增】統一網卡設定為 eth0 與鎖定網路配置
+# 5. 統一網卡設定為 eth0 與鎖定網路配置
 log "5. 統一網卡命名為 eth0 與網路配置..."
-# 刪除所有 ens 開頭的舊設定並建立標準 eth0 設定
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
 TYPE=Ethernet
@@ -79,15 +80,11 @@ ONBOOT=yes
 USERCTL=no
 EOF
 
-# 停用 Cloud-Init 的網路自動管理 (防止重啟後被覆蓋)
 mkdir -p /etc/cloud/cloud.cfg.d/
 echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
 
-# 注入核心參數 (net.ifnames=0 與 biosdevname=0)
-# 加入防重複寫入機制，確保 GRUB_CMDLINE_LINUX 乾淨
 if ! grep -q "net.ifnames=0" /etc/default/grub; then
     sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="net.ifnames=0 biosdevname=0 /' /etc/default/grub
-    # 更新 GRUB 配置使其永久生效
     grub2-mkconfig -o /boot/grub2/grub.cfg || true
 fi
 
@@ -156,7 +153,6 @@ systemctl restart chronyd
 
 # 10. 建立客製化腳本 (QGA / Mount / SSH Port)
 log "10. 建立 QGA Watchdog 與客製化腳本..."
-# QGA Watchdog
 QGA_SH="/usr/lib/systemd/system/cdncloud-qga.sh"
 cat << 'EOF' > "$QGA_SH"
 #!/bin/bash
@@ -185,7 +181,6 @@ EOF
 systemctl daemon-reload
 systemctl enable --now cdncloud-qga.service
 
-# Cloud-init Scripts
 MOUNT_SH="/var/lib/cloud/scripts/per-instance/mount.sh"
 mkdir -p "$(dirname "$MOUNT_SH")"
 cat << 'EOF' > "$MOUNT_SH"
@@ -266,7 +261,6 @@ fi
 EOF
 chmod +x "$MOUNT_SH"
 
-# 11. 寫入 Cloud-init per-boot QGA 腳本
 QGA_BOOT_SH="/var/lib/cloud/scripts/per-boot/install-qga.sh"
 mkdir -p "$(dirname "$QGA_BOOT_SH")"
 cat << 'EOF' > "$QGA_BOOT_SH"
@@ -282,7 +276,6 @@ fi
 EOF
 chmod +x "$QGA_BOOT_SH"
 
-# SSH Port Change Script
 cat << 'EOF' > /root/Change_SSH_Port.sh
 #!/bin/bash
 read -p "請輸入新的 SSH Port: " NEW_PORT
@@ -298,8 +291,8 @@ systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 12. 封裝日期與清理
-log "12. 押上日期與執行最終清理..."
+# 11. 封裝日期與清理
+log "11. 押上日期與執行最終清理..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
@@ -314,11 +307,9 @@ if [[ "$CLEAN_ANS" == "YES" ]]; then
 
   cat /dev/null > /etc/machine-id
   
-  # 基礎實例清理 (保留 scripts)
   rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
   rm -rf /tmp/* /var/tmp/*
   
-  # 安全深層清理：只刪除 Cloud-init 產生的 Python 編譯快取檔
   find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
   find /var/log -type f -exec cp /dev/null {} \;
