@@ -282,66 +282,59 @@ systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 11. 封裝日期與終極大掃除
-log "11. 押上日期與執行終極大掃除..."
+# 11. 封裝日期與終極大掃除 (全自動執行)
+log "11. 押上日期與執行終極大掃除 (自動執行中，請稍候)..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
 echo "------------------------------------------------------------"
-read -p "是否執行封裝前終極大掃除？ [預設按 Enter 即為 YES] (Y/n): " CLEAN_ANS
-CLEAN_ANS=${CLEAN_ANS:-Y}
+log "開始執行終極潔癖大掃除..."
 
-if [[ "$CLEAN_ANS" =~ ^[Yy]$ ]] || [[ "$CLEAN_ANS" =~ ^[Yy][Ee][Ss]$ ]]; then
-  log "開始執行終極潔癖大掃除..."
-  
-  # 1. 清理 SSH 金鑰，確保新機器重新生成
-  rm -f /etc/ssh/ssh_host_*_key*
-  
-  # 2. 清理 Cloud-init 基礎實例與 Python 快取 (保留腳本)
-  rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
-  find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+# 1. 清理 SSH 金鑰，確保新機器重新生成
+rm -f /etc/ssh/ssh_host_*_key*
 
-  # 3. 清理系統日誌與 Journal
-  rm -rf /run/log/journal/* || true
-  systemctl restart systemd-journald || true
+# 2. 清理 Cloud-init 基礎實例與 Python 快取 (保留腳本)
+rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
+find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
-  # 4. 清理安裝紀錄與暫存檔
-  rm -f ~root/anaconda-ks.cfg
-  rm -rf /var/log/anaconda
-  rm -rf /tmp/*
-  rm -rf /var/tmp/*
-  
-  # 5. 清空系統識別碼與 hostname (開機後會自動產生新的)
-  cat /dev/null > /etc/machine-id
-  echo > /etc/hostname
+# 3. 清理系統日誌與 Journal
+rm -rf /run/log/journal/* || true
+systemctl restart systemd-journald || true
 
-  # 6. 清空各類日誌檔案
-  echo > /var/log/boot.log
-  echo > /var/log/cloud-init.log
-  echo > /var/log/lastlog
-  echo > /var/log/btmp
-  echo > /var/log/wtmp
-  echo > /var/log/secure
-  echo > /var/log/cloud-init-output.log
-  echo > /var/log/cron
-  echo > /var/log/maillog
-  echo > /var/log/spooler
-  echo > /var/log/kdump.log
-  echo > /var/log/multi-queue-hw.log
-  echo > /var/log/dmesg
-  echo > /var/log/dmesg.old
-  echo > /var/log/yum.log
-  echo > /var/log/messages
+# 4. 清理安裝紀錄與暫存檔
+rm -f ~root/anaconda-ks.cfg
+rm -rf /var/log/anaconda
+rm -rf /tmp/*
+rm -rf /var/tmp/*
 
-  # 7. 清理 Root 使用者紀錄與金鑰
-  rm -rf ~root/.ssh/*
-  rm -rf ~root/.pki/*
-  echo > ~/.bash_history
-  echo > ~/.history
-  
-  # 8. 清空當前指令紀錄 (不自動關機)
-  history -c
-  log "大掃除完成！現在你可以安全地手動關機並封裝鏡像了。"
-else
-  log "已跳過清理步驟。腳本執行完畢。"
-fi
+# 5. 清空系統識別碼與 hostname (開機後會自動產生新的)
+cat /dev/null > /etc/machine-id
+echo > /etc/hostname
+
+# 6. 清空各類日誌檔案
+echo > /var/log/boot.log
+echo > /var/log/cloud-init.log
+echo > /var/log/lastlog
+echo > /var/log/btmp
+echo > /var/log/wtmp
+echo > /var/log/secure
+echo > /var/log/cloud-init-output.log
+echo > /var/log/cron
+echo > /var/log/maillog
+echo > /var/log/spooler
+echo > /var/log/kdump.log
+echo > /var/log/multi-queue-hw.log
+echo > /var/log/dmesg
+echo > /var/log/dmesg.old
+echo > /var/log/yum.log
+echo > /var/log/messages
+
+# 7. 清理 Root 使用者紀錄與金鑰
+rm -rf ~root/.ssh/*
+rm -rf ~root/.pki/*
+echo > ~/.bash_history
+echo > ~/.history
+
+# 8. 清空當前指令紀錄 (不自動關機)
+history -c
+log "大掃除完成！現在你可以安全地手動關機並封裝鏡像了。"
