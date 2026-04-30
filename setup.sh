@@ -66,7 +66,6 @@ sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/ssh
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl restart sshd
 
-# 【新增】禁用預設 rocky 帳號，加強安全性
 if id rocky &>/dev/null; then
     usermod -L -s /sbin/nologin rocky
     log "帳號 rocky 已成功禁用 (密碼鎖定且 Shell 已關閉)"
@@ -144,7 +143,6 @@ cat << 'EOF' >> /etc/security/limits.conf
 * hard memlock unlimited
 EOF
 
-# 【新增】為 history 指令加上時間戳記
 echo 'export HISTTIMEFORMAT="%F %T "' > /etc/profile.d/history_time.sh
 source /etc/profile.d/history_time.sh || true
 log "指令歷史紀錄 (History) 已加入時間戳記"
@@ -194,12 +192,11 @@ mkdir -p "$(dirname "$MOUNT_SH")"
 cat << 'EOF' > "$MOUNT_SH"
 #!/bin/bash
 
-# Check system version
 if [[ -f /etc/os-release ]]; then
     source /etc/os-release
-    if [[ $ID == "centos" ]]; then
+    if [[ $ID == "centos" ]] || [[ $ID == "rocky" ]]; then
         VERSION=$VERSION_ID
-        echo "CentOS detected: version $VERSION"
+        echo "OS detected: version $VERSION"
     else
         echo "Unsupported system: $ID"
         exit 1
@@ -209,19 +206,15 @@ else
     exit 1
 fi
 
-# Ensure necessary tools are installed
 required_tools=(parted xfsprogs cloud-utils-growpart)
 for tool in "${required_tools[@]}"; do
     if ! command -v "$tool" &>/dev/null; then
-        echo "Installing $tool..."
-        if ! sudo yum install -y "$tool"; then
-            echo "Failed to install $tool"
+        if ! sudo dnf install -y "$tool"; then
             exit 1
         fi
     fi
 done
 
-# Function to setup a directory with a disk
 setup_directory() {
     local dir=$1
     local disk=$2
@@ -234,37 +227,27 @@ setup_directory() {
         mkfs.xfs -f "$disk"
         echo "UUID=$(blkid "$disk" | grep -oP 'UUID="\K[^"]+') $dir xfs defaults 0 0" >> /etc/fstab
         mount -a
-        echo "$dir has been successfully set up."
-    else
-        echo "$dir is already configured."
     fi
 }
 
-# Main logic
-if [[ $1 == '--directory' && -n $2 ]]; then
+if [[ ${1:-} == '--directory' && -n ${2:-} ]]; then
     disk=$(lsblk -np | grep -i "disk" | awk '{print $1}' | head -n 1)
     case $2 in
         '/data') setup_directory "/data" "$disk" ;;
         '/www') setup_directory "/www" "$disk" ;;
         '/home') setup_directory "/home" "$disk" ;;
-        *) echo "Invalid directory. Supported: /data, /www, /home" ;;
+        *) echo "Invalid directory." ;;
     esac
 else
     echo "Usage: $0 --directory [path]"
     exit 1
 fi
 
-# Resize disk based on CentOS version
-if [[ $VERSION -eq 7 || $VERSION -eq 9 ]]; then
-    growpart /dev/vda 1
+if [[ $VERSION == 7* || $VERSION == 8* || $VERSION == 9* ]]; then
+    growpart /dev/vda 1 || true
     if mount | grep -q "/dev/vda1"; then
-        xfs_growfs /dev/vda1
-    else
-        echo "Failed to mount /dev/vda1"
-        exit 1
+        xfs_growfs /dev/vda1 || true
     fi
-else
-    echo "Version-specific logic not implemented for this version."
 fi
 EOF
 chmod +x "$MOUNT_SH"
@@ -277,7 +260,7 @@ if ps -ef | grep qemu-ga | egrep -v grep >/dev/null
 then
 echo " qemu-guest-agent is started!" > /dev/null
 else
-yum -y install qemu-guest-agent >> /dev/null
+dnf -y install qemu-guest-agent >> /dev/null
 sed -ri '/^BLACKLIST_RPC/s#^##' /etc/sysconfig/qemu-ga
 systemctl enable --now qemu-guest-agent
 fi
@@ -299,28 +282,66 @@ systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 11. 封裝日期與清理
-log "11. 押上日期與執行最終清理..."
+# 11. 封裝日期與終極大掃除
+log "11. 押上日期與執行終極大掃除..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
 echo "------------------------------------------------------------"
-read -p "是否執行封裝清理 (YES/NO): " CLEAN_ANS
+read -p "是否執行封裝前終極大掃除並自動關機？ (YES/NO): " CLEAN_ANS
 if [[ "$CLEAN_ANS" == "YES" ]]; then
+  log "開始執行終極潔癖大掃除..."
+  
+  # 1. 清理 SSH 金鑰，確保新機器重新生成
   rm -f /etc/ssh/ssh_host_*_key*
-  setenforce 0 2>/dev/null || true
-  ssh-keygen -A
-  restorecon -Rv /etc/ssh || true
-  systemctl restart sshd
-
-  cat /dev/null > /etc/machine-id
   
+  # 2. 清理 Cloud-init 基礎實例與 Python 快取 (保留腳本)
   rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
-  rm -rf /tmp/* /var/tmp/*
-  
   find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
-  find /var/log -type f -exec cp /dev/null {} \;
+  # 3. 清理系統日誌與 Journal
+  rm -rf /run/log/journal/* || true
+  systemctl restart systemd-journald || true
+
+  # 4. 清理安裝紀錄與暫存檔
+  rm -f ~root/anaconda-ks.cfg
+  rm -rf /var/log/anaconda
+  rm -rf /tmp/*
+  rm -rf /var/tmp/*
+  
+  # 5. 清空系統識別碼與 hostname (開機後會自動產生新的)
+  cat /dev/null > /etc/machine-id
+  echo > /etc/hostname
+
+  # 6. 清空各類日誌檔案
+  echo > /var/log/boot.log
+  echo > /var/log/cloud-init.log
+  echo > /var/log/lastlog
+  echo > /var/log/btmp
+  echo > /var/log/wtmp
+  echo > /var/log/secure
+  echo > /var/log/cloud-init-output.log
+  echo > /var/log/cron
+  echo > /var/log/maillog
+  echo > /var/log/spooler
+  echo > /var/log/kdump.log
+  echo > /var/log/multi-queue-hw.log
+  echo > /var/log/dmesg
+  echo > /var/log/dmesg.old
+  echo > /var/log/yum.log
+  echo > /var/log/messages
+
+  # 7. 清理 Root 使用者紀錄與金鑰
+  rm -rf ~root/.ssh/*
+  rm -rf ~root/.pki/*
+  echo > ~/.bash_history
+  echo > ~/.history
+  
+  log "所有紀錄已清空，系統即將關機。請在關機後於母機後台建立鏡像！"
+  
+  # 8. 清空當前指令紀錄並安全關機
   history -c
-  log "清理完成，鏡像封裝就緒！"
+  poweroff
+else
+  log "已跳過清理步驟。腳本執行完畢。"
 fi
