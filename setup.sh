@@ -288,8 +288,10 @@ sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
 echo "------------------------------------------------------------"
-read -p "是否執行封裝前終極大掃除並自動關機？ (YES/NO): " CLEAN_ANS
-if [[ "$CLEAN_ANS" == "YES" ]]; then
+read -p "是否執行封裝前終極大掃除？ [預設按 Enter 即為 YES] (Y/n): " CLEAN_ANS
+CLEAN_ANS=${CLEAN_ANS:-Y}
+
+if [[ "$CLEAN_ANS" =~ ^[Yy]$ ]] || [[ "$CLEAN_ANS" =~ ^[Yy][Ee][Ss]$ ]]; then
   log "開始執行終極潔癖大掃除..."
   
   # 1. 清理 SSH 金鑰，確保新機器重新生成
@@ -337,11 +339,9 @@ if [[ "$CLEAN_ANS" == "YES" ]]; then
   echo > ~/.bash_history
   echo > ~/.history
   
-  log "所有紀錄已清空，系統即將關機。請在關機後於母機後台建立鏡像！"
-  
-  # 8. 清空當前指令紀錄並安全關機
+  # 8. 清空當前指令紀錄 (不自動關機)
   history -c
-  poweroff
+  log "大掃除完成！現在你可以安全地手動關機並封裝鏡像了。"
 else
   log "已跳過清理步驟。腳本執行完畢。"
 fi
