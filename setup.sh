@@ -102,17 +102,28 @@ if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
   echo "fastestmirror=True" >> /etc/dnf/dnf.conf
 fi
 
-# 7. 寫入 Cloud-init 設定
-log "7. 寫入 Cloud-init 設定..."
+# ==============================================================================
+# [優化] 7. 寫入 Cloud-init 設定 (強制開機生成 SSH 金鑰)
+# ==============================================================================
+log "7. 寫入 Cloud-init 設定與 SSH 金鑰生成策略..."
 dnf install -y cloud-init
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
 sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
+
+# 確保 ssh 模組在 cloud_init_modules 中啟用
+if ! grep -q "\- ssh$" /etc/cloud/cloud.cfg; then
+  sed -i '/cloud_init_modules:/a \ - ssh' /etc/cloud/cloud.cfg
+fi
+
 cat << 'EOF' >> /etc/cloud/cloud.cfg
 
 datasource:
   Ec2: { max_wait: 5 }
   CloudStack: { max_wait: 5 }
 lock_passwd: false
+
+# 強制在第一次開機時生成所有類型的 SSH 金鑰 (公有雲標準)
+ssh_genkeytypes: ['rsa', 'ecdsa', 'ed25519']
 EOF
 
 # 8. 系統核心與資源限制優化
@@ -282,19 +293,22 @@ systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# 11. 封裝日期與終極大掃除 (全自動執行)
-log "11. 押上日期與執行終極大掃除 (自動執行中，請稍候)..."
+# ==============================================================================
+# [優化] 11. 封裝日期與終極大掃除 (全自動執行，符合公有雲資安標準)
+# ==============================================================================
+log "11. 押上日期與執行終極大掃除 (符合公有雲資安標準)..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
 echo "------------------------------------------------------------"
 log "開始執行終極潔癖大掃除..."
 
-# 1. 清理 SSH 金鑰，確保新機器重新生成
+# 1. 徹底清理 SSH 金鑰 (抹除舊機器的指紋)
 rm -f /etc/ssh/ssh_host_*_key*
 
-# 2. 清理 Cloud-init 基礎實例與 Python 快取 (保留腳本)
+# 2. 清理 Cloud-init 狀態 (關鍵！這會讓下次開機被視為 First Boot 並觸發金鑰生成)
 rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
+rm -rf /var/lib/cloud/sem/*
 find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
 # 3. 清理系統日誌與 Journal
@@ -307,27 +321,14 @@ rm -rf /var/log/anaconda
 rm -rf /tmp/*
 rm -rf /var/tmp/*
 
-# 5. 清空系統識別碼與 hostname (開機後會自動產生新的)
+# 5. 清空系統識別碼與 hostname (保證新機器的唯一性)
 cat /dev/null > /etc/machine-id
 echo > /etc/hostname
 
-# 6. 清空各類日誌檔案
-echo > /var/log/boot.log
-echo > /var/log/cloud-init.log
-echo > /var/log/lastlog
-echo > /var/log/btmp
-echo > /var/log/wtmp
-echo > /var/log/secure
-echo > /var/log/cloud-init-output.log
-echo > /var/log/cron
-echo > /var/log/maillog
-echo > /var/log/spooler
-echo > /var/log/kdump.log
-echo > /var/log/multi-queue-hw.log
-echo > /var/log/dmesg
-echo > /var/log/dmesg.old
-echo > /var/log/yum.log
-echo > /var/log/messages
+# 6. 清空各類日誌檔案 (使用迴圈優化代碼)
+for logfile in boot.log lastlog btmp wtmp secure cron maillog spooler kdump.log multi-queue-hw.log dmesg dmesg.old yum.log messages; do
+    echo > /var/log/$logfile
+done
 
 # 7. 清理 Root 使用者紀錄與金鑰
 rm -rf ~root/.ssh/*
@@ -335,6 +336,10 @@ rm -rf ~root/.pki/*
 echo > ~/.bash_history
 echo > ~/.history
 
-# 8. 清空當前指令紀錄 (不自動關機)
+# 8. 確保 SSH 服務設為開機自啟
+systemctl enable sshd
+
+# 9. 清空當前指令紀錄 (不自動關機)
 history -c
-log "大掃除完成！現在你可以安全地手動關機並封裝鏡像了。"
+log "公有雲標準封裝完成！所有指紋已抹除，下一次開機將由 cloud-init 自動生成新金鑰。"
+log "現在你可以安全地手動關機 (輸入 poweroff) 並封裝鏡像了。"
