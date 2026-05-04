@@ -71,7 +71,9 @@ if id rocky &>/dev/null; then
     log "帳號 rocky 已成功禁用 (密碼鎖定且 Shell 已關閉)"
 fi
 
-# 5. 統一網卡設定為 eth0 與鎖定網路配置
+# ==============================================================================
+# 5. 統一網卡設定為 eth0 與網路配置 (不鎖定 DNS，移除 PEERDNS=no)
+# ==============================================================================
 log "5. 統一網卡命名為 eth0 與網路配置..."
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
@@ -90,13 +92,13 @@ if ! grep -q "net.ifnames=0" /etc/default/grub; then
     grub2-mkconfig -o /boot/grub2/grub.cfg || true
 fi
 
-# 6. 配置 DNS 與 DNF 優化
-log "6. 配置 DNS 與 DNF..."
-cat << 'EOF' > /etc/resolv.conf
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-nameserver 114.114.114.114
-EOF
+# ==============================================================================
+# 6. 配置 DNF 優化 (移除強制寫入的 resolv.conf 與 NetworkManager.conf 設定)
+# ==============================================================================
+log "6. 配置 DNF 優化..."
+
+# 註：這裡移除了強制寫入 /etc/resolv.conf 與 NetworkManager 的 dns=none 設定
+# 讓系統透過 DHCP 或其他方式自動獲取 DNS。
 
 if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
   echo "fastestmirror=True" >> /etc/dnf/dnf.conf
@@ -166,7 +168,7 @@ systemctl enable --now chronyd
 systemctl restart chronyd
 
 # ==============================================================================
-# [終極防呆] 10. 建立 SSH 金鑰自癒服務、QGA 與客製化腳本
+# 10. 建立 SSH 金鑰自癒服務、QGA 與客製化腳本
 # ==============================================================================
 log "10. 建立 SSH 金鑰自癒機制 (Fail-Safe) 與客製化腳本..."
 
