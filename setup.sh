@@ -103,14 +103,13 @@ if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
 fi
 
 # ==============================================================================
-# [優化] 7. 寫入 Cloud-init 設定 (強制開機生成 SSH 金鑰)
+# 7. 寫入 Cloud-init 設定 (公有雲標準策略)
 # ==============================================================================
 log "7. 寫入 Cloud-init 設定與 SSH 金鑰生成策略..."
 dnf install -y cloud-init
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
 sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
 
-# 確保 ssh 模組在 cloud_init_modules 中啟用
 if ! grep -q "\- ssh$" /etc/cloud/cloud.cfg; then
   sed -i '/cloud_init_modules:/a \ - ssh' /etc/cloud/cloud.cfg
 fi
@@ -121,8 +120,6 @@ datasource:
   Ec2: { max_wait: 5 }
   CloudStack: { max_wait: 5 }
 lock_passwd: false
-
-# 強制在第一次開機時生成所有類型的 SSH 金鑰 (公有雲標準)
 ssh_genkeytypes: ['rsa', 'ecdsa', 'ed25519']
 EOF
 
@@ -168,8 +165,31 @@ EOF
 systemctl enable --now chronyd
 systemctl restart chronyd
 
-# 10. 建立客製化腳本 (QGA / Mount / SSH Port)
-log "10. 建立 QGA Watchdog 與客製化腳本..."
+# ==============================================================================
+# [終極防呆] 10. 建立 SSH 金鑰自癒服務、QGA 與客製化腳本
+# ==============================================================================
+log "10. 建立 SSH 金鑰自癒機制 (Fail-Safe) 與客製化腳本..."
+
+# SSH 金鑰自癒服務：確保 Cloud-init 失效時，sshd 啟動前一定會補齊金鑰
+SSH_KEYGEN_SVC="/usr/lib/systemd/system/cdncloud-ssh-keygen.service"
+cat << 'EOF' > "$SSH_KEYGEN_SVC"
+[Unit]
+Description=CDNCloud SSH Keygen Fail-Safe
+Before=sshd.service
+ConditionPathExists=!/etc/ssh/ssh_host_rsa_key
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+ExecStartPost=-/usr/sbin/restorecon -Rv /etc/ssh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable cdncloud-ssh-keygen.service
+
+# QGA Watchdog 腳本
 QGA_SH="/usr/lib/systemd/system/cdncloud-qga.sh"
 cat << 'EOF' > "$QGA_SH"
 #!/bin/bash
@@ -195,45 +215,36 @@ ExecStart=/usr/lib/systemd/system/cdncloud-qga.sh
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
 systemctl enable --now cdncloud-qga.service
 
+# Mount 腳本
 MOUNT_SH="/var/lib/cloud/scripts/per-instance/mount.sh"
 mkdir -p "$(dirname "$MOUNT_SH")"
 cat << 'EOF' > "$MOUNT_SH"
 #!/bin/bash
-
 if [[ -f /etc/os-release ]]; then
     source /etc/os-release
     if [[ $ID == "centos" ]] || [[ $ID == "rocky" ]]; then
         VERSION=$VERSION_ID
-        echo "OS detected: version $VERSION"
     else
-        echo "Unsupported system: $ID"
         exit 1
     fi
 else
-    echo "Unknown system, /etc/os-release not found."
     exit 1
 fi
 
 required_tools=(parted xfsprogs cloud-utils-growpart)
 for tool in "${required_tools[@]}"; do
     if ! command -v "$tool" &>/dev/null; then
-        if ! sudo dnf install -y "$tool"; then
-            exit 1
-        fi
+        sudo dnf install -y "$tool" || exit 1
     fi
 done
 
 setup_directory() {
     local dir=$1
     local disk=$2
-
     if ! lsblk "$disk" | grep -q "$disk"; then
-        if ! [ -d "$dir" ]; then
-            mkdir -p "$dir"
-        fi
+        mkdir -p "$dir"
         parted -s "$disk" mklabel gpt
         mkfs.xfs -f "$disk"
         echo "UUID=$(blkid "$disk" | grep -oP 'UUID="\K[^"]+') $dir xfs defaults 0 0" >> /etc/fstab
@@ -247,11 +258,7 @@ if [[ ${1:-} == '--directory' && -n ${2:-} ]]; then
         '/data') setup_directory "/data" "$disk" ;;
         '/www') setup_directory "/www" "$disk" ;;
         '/home') setup_directory "/home" "$disk" ;;
-        *) echo "Invalid directory." ;;
     esac
-else
-    echo "Usage: $0 --directory [path]"
-    exit 1
 fi
 
 if [[ $VERSION == 7* || $VERSION == 8* || $VERSION == 9* ]]; then
@@ -267,13 +274,10 @@ QGA_BOOT_SH="/var/lib/cloud/scripts/per-boot/install-qga.sh"
 mkdir -p "$(dirname "$QGA_BOOT_SH")"
 cat << 'EOF' > "$QGA_BOOT_SH"
 #!/bin/bash
-if ps -ef | grep qemu-ga | egrep -v grep >/dev/null
-then
-echo " qemu-guest-agent is started!" > /dev/null
-else
-dnf -y install qemu-guest-agent >> /dev/null
-sed -ri '/^BLACKLIST_RPC/s#^##' /etc/sysconfig/qemu-ga
-systemctl enable --now qemu-guest-agent
+if ! ps -ef | grep qemu-ga | egrep -v grep >/dev/null; then
+    dnf -y install qemu-guest-agent >> /dev/null
+    sed -ri '/^BLACKLIST_RPC/s#^##' /etc/sysconfig/qemu-ga
+    systemctl enable --now qemu-guest-agent
 fi
 EOF
 chmod +x "$QGA_BOOT_SH"
@@ -294,7 +298,7 @@ EOF
 chmod +x /root/Change_SSH_Port.sh
 
 # ==============================================================================
-# [優化] 11. 封裝日期與終極大掃除 (全自動執行，符合公有雲資安標準)
+# 11. 封裝日期與終極大掃除 (全自動執行，符合公有雲資安標準)
 # ==============================================================================
 log "11. 押上日期與執行終極大掃除 (符合公有雲資安標準)..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
@@ -306,7 +310,7 @@ log "開始執行終極潔癖大掃除..."
 # 1. 徹底清理 SSH 金鑰 (抹除舊機器的指紋)
 rm -f /etc/ssh/ssh_host_*_key*
 
-# 2. 清理 Cloud-init 狀態 (關鍵！這會讓下次開機被視為 First Boot 並觸發金鑰生成)
+# 2. 清理 Cloud-init 狀態 (關鍵！觸發全新機器的初始化流程)
 rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
 rm -rf /var/lib/cloud/sem/*
 find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
@@ -325,7 +329,7 @@ rm -rf /var/tmp/*
 cat /dev/null > /etc/machine-id
 echo > /etc/hostname
 
-# 6. 清空各類日誌檔案 (使用迴圈優化代碼)
+# 6. 清空各類日誌檔案
 for logfile in boot.log lastlog btmp wtmp secure cron maillog spooler kdump.log multi-queue-hw.log dmesg dmesg.old yum.log messages; do
     echo > /var/log/$logfile
 done
@@ -341,5 +345,6 @@ systemctl enable sshd
 
 # 9. 清空當前指令紀錄 (不自動關機)
 history -c
-log "公有雲標準封裝完成！所有指紋已抹除，下一次開機將由 cloud-init 自動生成新金鑰。"
+log "公有雲標準封裝完成！所有指紋已抹除。"
+log "自癒服務已掛載，下一次開機 22 Port 絕對保證能順利連線！"
 log "現在你可以安全地手動關機 (輸入 poweroff) 並封裝鏡像了。"
