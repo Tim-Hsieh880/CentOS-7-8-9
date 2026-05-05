@@ -72,9 +72,9 @@ if id rocky &>/dev/null; then
 fi
 
 # ==============================================================================
-# 5. 統一網卡設定為 eth0 與網路配置 (不鎖定 DNS，移除 PEERDNS=no)
+# [完美優化] 5. 統一網卡設定為 eth0 與網路配置 (使用 PEERDNS=no 拒絕外來 DNS)
 # ==============================================================================
-log "5. 統一網卡命名為 eth0 與網路配置..."
+log "5. 統一網卡命名為 eth0 與網路配置 (指定專屬 DNS)..."
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
 TYPE=Ethernet
@@ -82,6 +82,10 @@ BOOTPROTO=dhcp
 DEVICE=eth0
 ONBOOT=yes
 USERCTL=no
+PEERDNS=no
+DNS1=8.8.8.8
+DNS2=1.1.1.1
+DNS3=114.114.114.114
 EOF
 
 mkdir -p /etc/cloud/cloud.cfg.d/
@@ -93,12 +97,10 @@ if ! grep -q "net.ifnames=0" /etc/default/grub; then
 fi
 
 # ==============================================================================
-# 6. 配置 DNF 優化 (移除強制寫入的 resolv.conf 與 NetworkManager.conf 設定)
+# [完美優化] 6. 配置 DNF 優化 (不再強制暴力覆寫 resolv.conf)
 # ==============================================================================
 log "6. 配置 DNF 優化..."
-
-# 註：這裡移除了強制寫入 /etc/resolv.conf 與 NetworkManager 的 dns=none 設定
-# 讓系統透過 DHCP 或其他方式自動獲取 DNS。
+# 註：這裡完全信任 NetworkManager 根據 ifcfg-eth0 幫我們生成乾淨的 resolv.conf
 
 if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
   echo "fastestmirror=True" >> /etc/dnf/dnf.conf
