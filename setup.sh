@@ -29,7 +29,7 @@ dnf install -y \
     python3 python3-pip gcc gcc-c++ wget net-tools psmisc lsof bzip2 \
     telnet nmap lrzsz rsync zip unzip dos2unix gdisk parted \
     cloud-utils-growpart e2fsprogs vim \
-    policycoreutils-python-utils firewalld acpid
+    policycoreutils-python-utils firewalld acpid git
 
 pip3 install --upgrade pip
 
@@ -71,9 +71,7 @@ if id rocky &>/dev/null; then
     log "帳號 rocky 已成功禁用 (密碼鎖定且 Shell 已關閉)"
 fi
 
-# ==============================================================================
-# [完美優化] 5. 統一網卡設定為 eth0 與網路配置 (使用 PEERDNS=no 拒絕外來 DNS)
-# ==============================================================================
+# 5. 統一網卡設定為 eth0 與網路配置 (使用 PEERDNS=no 確保 DNS 穩定)
 log "5. 統一網卡命名為 eth0 與網路配置 (指定專屬 DNS)..."
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
@@ -96,19 +94,13 @@ if ! grep -q "net.ifnames=0" /etc/default/grub; then
     grub2-mkconfig -o /boot/grub2/grub.cfg || true
 fi
 
-# ==============================================================================
-# [完美優化] 6. 配置 DNF 優化 (不再強制暴力覆寫 resolv.conf)
-# ==============================================================================
+# 6. 配置 DNF 優化
 log "6. 配置 DNF 優化..."
-# 註：這裡完全信任 NetworkManager 根據 ifcfg-eth0 幫我們生成乾淨的 resolv.conf
-
 if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
   echo "fastestmirror=True" >> /etc/dnf/dnf.conf
 fi
 
-# ==============================================================================
 # 7. 寫入 Cloud-init 設定 (公有雲標準策略)
-# ==============================================================================
 log "7. 寫入 Cloud-init 設定與 SSH 金鑰生成策略..."
 dnf install -y cloud-init
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
@@ -169,12 +161,10 @@ EOF
 systemctl enable --now chronyd
 systemctl restart chronyd
 
-# ==============================================================================
 # 10. 建立 SSH 金鑰自癒服務、QGA 與客製化腳本
-# ==============================================================================
 log "10. 建立 SSH 金鑰自癒機制 (Fail-Safe) 與客製化腳本..."
 
-# SSH 金鑰自癒服務：確保 Cloud-init 失效時，sshd 啟動前一定會補齊金鑰
+# SSH 金鑰自癒服務
 SSH_KEYGEN_SVC="/usr/lib/systemd/system/cdncloud-ssh-keygen.service"
 cat << 'EOF' > "$SSH_KEYGEN_SVC"
 [Unit]
@@ -301,9 +291,7 @@ systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /root/Change_SSH_Port.sh
 
-# ==============================================================================
 # 11. 封裝日期與終極大掃除 (全自動執行，符合公有雲資安標準)
-# ==============================================================================
 log "11. 押上日期與執行終極大掃除 (符合公有雲資安標準)..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
@@ -311,10 +299,10 @@ echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 echo "------------------------------------------------------------"
 log "開始執行終極潔癖大掃除..."
 
-# 1. 徹底清理 SSH 金鑰 (抹除舊機器的指紋)
+# 1. 徹底清理 SSH 金鑰
 rm -f /etc/ssh/ssh_host_*_key*
 
-# 2. 清理 Cloud-init 狀態 (關鍵！觸發全新機器的初始化流程)
+# 2. 清理 Cloud-init 狀態
 rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
 rm -rf /var/lib/cloud/sem/*
 find /usr/lib/python3.*/site-packages/cloudinit/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
@@ -329,7 +317,7 @@ rm -rf /var/log/anaconda
 rm -rf /tmp/*
 rm -rf /var/tmp/*
 
-# 5. 清空系統識別碼與 hostname (保證新機器的唯一性)
+# 5. 清空系統識別碼與 hostname
 cat /dev/null > /etc/machine-id
 echo > /etc/hostname
 
@@ -338,17 +326,23 @@ for logfile in boot.log lastlog btmp wtmp secure cron maillog spooler kdump.log 
     echo > /var/log/$logfile
 done
 
-# 7. 清理 Root 使用者紀錄與金鑰
+# 7. 清理由用戶端指定的安裝殘留與工具
+log "清理特定安裝殘留與 Git 工具..."
+rm -rf ~/Rocky-8 ~/original-ks.cfg
+yum remove git -y
+
+# 8. 清理 Root 使用者紀錄與金鑰
 rm -rf ~root/.ssh/*
 rm -rf ~root/.pki/*
 echo > ~/.bash_history
 echo > ~/.history
 
-# 8. 確保 SSH 服務設為開機自啟
+# 9. 確保 SSH 服務設為開機自啟
 systemctl enable sshd
 
-# 9. 清空當前指令紀錄 (不自動關機)
+# 10. 清空當前指令紀錄 (不自動關機)
 history -c
-log "公有雲標準封裝完成！所有指紋已抹除。"
+
+log "公有雲標準封裝完成！Git 已移除，所有指紋已抹除。"
 log "自癒服務已掛載，下一次開機 22 Port 絕對保證能順利連線！"
 log "現在你可以安全地手動關機 (輸入 poweroff) 並封裝鏡像了。"
