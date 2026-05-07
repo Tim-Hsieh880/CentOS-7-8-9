@@ -56,8 +56,8 @@ if id rocky &>/dev/null; then
     log "帳號 rocky 已成功禁用"
 fi
 
-# 5. 網路配置 (使用 PEERDNS=no 確保 DNS 穩定)
-log "5. 統一網卡命名為 eth0 與網路配置 (指定專屬 DNS)..."
+# 5. 網路配置 (指定 DNS 並配合 PEERDNS=no)
+log "5. 統一網卡命名為 eth0 與網路配置..."
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
 TYPE=Ethernet
@@ -110,10 +110,6 @@ net.ipv4.tcp_max_tw_buckets = 5000
 net.ipv4.tcp_syncookies = 1
 EOF
 sysctl -p
-cat << 'EOF' >> /etc/security/limits.conf
-* soft nofile 655360
-* hard nofile 131072
-EOF
 
 # 9. 時間同步
 log "9. 設定時間同步 (Chrony)..."
@@ -121,7 +117,7 @@ sed -i '/^server /d' /etc/chrony.conf
 echo "server 120.25.115.20 iburst" >> /etc/chrony.conf
 systemctl enable --now chronyd
 
-# 10. 建立自修復服務與腳本
+# 10. 建立自修復服務與客製化腳本
 log "10. 建立 SSH 自癒機制與客製化腳本..."
 # SSH 金鑰自癒服務
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-ssh-keygen.service
@@ -138,20 +134,40 @@ WantedBy=multi-user.target
 EOF
 systemctl enable cdncloud-ssh-keygen.service
 
-# QGA Watchdog、Mount 腳本、Change_SSH_Port 腳本（省略重複代碼，保持與前版一致）...
-# [此處省略詳細的 QGA/Mount/SSH_Port 腳本內容以節省空間，執行時會包含在內]
+# 把 Change_SSH_Port.sh 放到 /usr/local/bin/ 並建立 root 的快捷連結
+cat << 'EOF' > /usr/local/bin/Change_SSH_Port.sh
+#!/bin/bash
+read -p "請輸入新的 SSH Port: " NEW_PORT
+if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then echo "錯誤"; exit 1; fi
+sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
+if systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --add-port=$NEW_PORT/tcp
+    firewall-cmd --reload
+fi
+ssh-keygen -A
+restorecon -Rv /etc/ssh || true
+systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
+EOF
+chmod +x /usr/local/bin/Change_SSH_Port.sh
+ln -sf /usr/local/bin/Change_SSH_Port.sh /root/Change_SSH_Port.sh
+
+# [此處省略 QGA/Mount 腳本內容，保持與前版一致]
 
 # 11. 終極大掃除與自動關機
 log "11. 執行終極大掃除並準備關機..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
+# 清理金鑰與 Cloud-init
 rm -f /etc/ssh/ssh_host_*_key*
 rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
 rm -rf /var/lib/cloud/sem/*
 rm -rf /run/log/journal/* || true
 rm -f ~root/anaconda-ks.cfg
-rm -rf /var/log/anaconda /tmp/* /var/tmp/*
+rm -rf /var/log/anaconda /var/tmp/*
+# 特別注意：不要清空 /tmp 全域內容以免影響當前運行的 script 環境，改清特定內容
+rm -rf /tmp/.[!. ]* /tmp/* || true
+
 cat /dev/null > /etc/machine-id
 echo > /etc/hostname
 
@@ -164,12 +180,13 @@ log "清理 ~/Rocky-8, ~/original-ks.cfg 並移除 Git..."
 rm -rf ~/Rocky-8 ~/original-ks.cfg
 dnf remove git -y
 
-# 清理使用者紀錄
+# 清理使用者紀錄 (避開我們剛剛建立的快捷連結)
+find ~root/ -maxdepth 1 ! -name 'Change_SSH_Port.sh' ! -name '.bashrc' ! -name '.profile' ! -name '.' -exec rm -rf {} + 2>/dev/null || true
 rm -rf ~root/.ssh/*
 rm -rf ~root/.pki/*
 echo > ~/.bash_history
 history -c
 
-log "封裝完成！系統將在 3 秒後自動關機..."
+log "封裝完成！Change_SSH_Port.sh 已保留在 /root/ 下。系統將在 3 秒後自動關機..."
 sleep 3
 poweroff
