@@ -53,11 +53,11 @@ systemctl restart sshd
 
 if id rocky &>/dev/null; then
     usermod -L -s /sbin/nologin rocky
-    log "帳號 rocky 已成功禁用"
+    log "帳號 rocky 已成功禁用 (密碼鎖定且 Shell 已關閉)"
 fi
 
 # 5. 網路配置 (指定 DNS 並配合 PEERDNS=no)
-log "5. 統一網卡命名為 eth0 與網路配置..."
+log "5. 統一網卡命名為 eth0 與網路配置 (指定 8.8.8.8)..."
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
 TYPE=Ethernet
@@ -86,7 +86,7 @@ if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
 fi
 
 # 7. Cloud-init 設定
-log "7. 寫入 Cloud-init 設定..."
+log "7. 寫入 Cloud-init 設定與 SSH 金鑰策略..."
 dnf install -y cloud-init
 sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
 sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
@@ -110,6 +110,10 @@ net.ipv4.tcp_max_tw_buckets = 5000
 net.ipv4.tcp_syncookies = 1
 EOF
 sysctl -p
+cat << 'EOF' >> /etc/security/limits.conf
+* soft nofile 655360
+* hard nofile 131072
+EOF
 
 # 9. 時間同步
 log "9. 設定時間同步 (Chrony)..."
@@ -117,9 +121,9 @@ sed -i '/^server /d' /etc/chrony.conf
 echo "server 120.25.115.20 iburst" >> /etc/chrony.conf
 systemctl enable --now chronyd
 
-# 10. 建立自修復服務與客製化腳本
-log "10. 建立 SSH 自癒機制與客製化腳本..."
-# SSH 金鑰自癒服務
+# 10. 建立自修復服務與客製化工具
+log "10. 建立 SSH 自癒機制與保留工具..."
+# SSH 金鑰自癒服務：保證開機沒金鑰時自動補齊，防 22 Port 斷線
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-ssh-keygen.service
 [Unit]
 Description=CDNCloud SSH Keygen Fail-Safe
@@ -134,7 +138,7 @@ WantedBy=multi-user.target
 EOF
 systemctl enable cdncloud-ssh-keygen.service
 
-# 把 Change_SSH_Port.sh 放到 /usr/local/bin/ 並建立 root 的快捷連結
+# 保留改 Port 工具在本體 /usr/local/bin/ 並建立快捷方式
 cat << 'EOF' > /usr/local/bin/Change_SSH_Port.sh
 #!/bin/bash
 read -p "請輸入新的 SSH Port: " NEW_PORT
@@ -151,42 +155,38 @@ EOF
 chmod +x /usr/local/bin/Change_SSH_Port.sh
 ln -sf /usr/local/bin/Change_SSH_Port.sh /root/Change_SSH_Port.sh
 
-# [此處省略 QGA/Mount 腳本內容，保持與前版一致]
-
 # 11. 終極大掃除與自動關機
-log "11. 執行終極大掃除並準備關機..."
+log "11. 執行終極大掃除並自動關機..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
-# 清理金鑰與 Cloud-init
+# 清理金鑰、日誌與 Cloud-init
 rm -f /etc/ssh/ssh_host_*_key*
 rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
 rm -rf /var/lib/cloud/sem/*
 rm -rf /run/log/journal/* || true
 rm -f ~root/anaconda-ks.cfg
-rm -rf /var/log/anaconda /var/tmp/*
-# 特別注意：不要清空 /tmp 全域內容以免影響當前運行的 script 環境，改清特定內容
-rm -rf /tmp/.[!. ]* /tmp/* || true
+rm -rf /var/log/anaconda /var/tmp/* /tmp/* || true
 
 cat /dev/null > /etc/machine-id
 echo > /etc/hostname
 
-for logfile in boot.log lastlog btmp wtmp secure cron maillog spooler messages; do
-    echo > /var/log/$logfile
+for logfile in boot.log lastlog btmp wtmp secure cron maillog spooler messages yum.log; do
+    [ -f "/var/log/$logfile" ] && echo > "/var/log/$logfile"
 done
 
-# 清理指定安裝殘留、移除 Git
+# 清理指定的殘留與移除 Git
 log "清理 ~/Rocky-8, ~/original-ks.cfg 並移除 Git..."
 rm -rf ~/Rocky-8 ~/original-ks.cfg
-dnf remove git -y
+dnf remove -y git
 
-# 清理使用者紀錄 (避開我們剛剛建立的快捷連結)
-find ~root/ -maxdepth 1 ! -name 'Change_SSH_Port.sh' ! -name '.bashrc' ! -name '.profile' ! -name '.' -exec rm -rf {} + 2>/dev/null || true
+# 清理 Root 紀錄 (防呆檢查)
 rm -rf ~root/.ssh/*
 rm -rf ~root/.pki/*
-echo > ~/.bash_history
+[ -f ~root/.bash_history ] && echo > ~root/.bash_history
+[ -f ~root/.history ] && echo > ~root/.history
 history -c
 
-log "封裝完成！Change_SSH_Port.sh 已保留在 /root/ 下。系統將在 3 秒後自動關機..."
+log "封裝完成！Change_SSH_Port.sh 已保留。系統將在 3 秒後自動關機..."
 sleep 3
 poweroff
