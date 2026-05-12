@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# CDNCloud Golden Image - SSH 終極修復版
-# 其他邏輯維持不變，僅修復 Systemd 啟動死鎖問題，確保 22 Port 順利復活
+# CDNCloud Golden Image - 終極密碼直連版
+# 功能：自動金鑰生成(防死鎖)、強制允許密碼登入、歷史紀錄徹底核平
 # ==============================================================================
 set -euo pipefail
 
@@ -33,11 +33,21 @@ firewall-cmd --reload > /dev/null 2>&1
 systemctl stop --now firewalld
 systemctl disable firewalld
 
-log "4. SSH 與帳號安全優化..."
+# ==============================================================================
+# 修改處：第 4 步 (加入霸王條款，強制開啟密碼與 Root 登入)
+# ==============================================================================
+log "4. SSH 與帳號安全優化 (強制啟用密碼直連)..."
 sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config || true
 setenforce 0 2>/dev/null || true
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+# 建立最高優先級的 SSH 設定檔，防止被 Cloud-init 覆蓋
+mkdir -p /etc/ssh/sshd_config.d/
+cat << 'EOF' > /etc/ssh/sshd_config.d/99-cdncloud-auth.conf
+PasswordAuthentication yes
+PermitRootLogin yes
+EOF
+chmod 600 /etc/ssh/sshd_config.d/99-cdncloud-auth.conf
+
 systemctl enable sshd
 id rocky &>/dev/null && usermod -L -s /sbin/nologin rocky
 
@@ -73,10 +83,7 @@ rtcsync
 EOF
 systemctl enable --now chronyd && systemctl restart chronyd
 
-# ==============================================================================
-# 修改處：第 8 步 (移除重啟指令，解開死鎖，只做金鑰生成，讓系統原生啟動 SSH)
-# ==============================================================================
-log "8. 建立 SSH 自癒強啟服務 (修復死鎖)..."
+log "8. 建立 SSH 自癒強啟服務 (無死鎖版)..."
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-ssh-keygen.service
 [Unit]
 Description=CDNCloud SSH Keygen
@@ -93,8 +100,6 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable cdncloud-ssh-keygen.service
-# 確保 sshd 本身是啟用狀態
-systemctl enable sshd
 
 log "9. 保留 Change_SSH_Port.sh 工具..."
 cat << 'EOF' > /usr/local/bin/Change_SSH_Port.sh
