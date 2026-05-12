@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# CDNCloud Golden Image - 終極不翻車版
-# 核心：防死鎖金鑰自癒、00-最高權重密碼解鎖、歷史紀錄核平處理
+# CDNCloud Golden Image - 終極不翻車版 (徹底壓制 Cloud-init)
 # ==============================================================================
 set -euo pipefail
 
@@ -33,9 +32,6 @@ firewall-cmd --reload > /dev/null 2>&1
 systemctl stop --now firewalld
 systemctl disable firewalld
 
-# ==============================================================================
-# 核心優化：建立 00- 霸王條款，徹底免疫 Cloud-init 的密碼封鎖
-# ==============================================================================
 log "4. SSH 與帳號安全優化 (寫入 00- 最高權重密碼解鎖)..."
 sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config || true
 setenforce 0 2>/dev/null || true
@@ -44,7 +40,7 @@ setenforce 0 2>/dev/null || true
 mkdir -p /etc/ssh/sshd_config.d/
 rm -f /etc/ssh/sshd_config.d/*cloud-init* || true
 
-# 寫入 00-cdncloud-auth.conf (數字越小，越早讀取，權重最高)
+# 寫入 00-cdncloud-auth.conf (保證 SSH 服務層面允許密碼)
 cat << 'EOF' > /etc/ssh/sshd_config.d/00-cdncloud-auth.conf
 PasswordAuthentication yes
 PermitRootLogin yes
@@ -68,9 +64,19 @@ DNS2=1.1.1.1
 DNS3=114.114.114.114
 EOF
 
-log "6. 時區與指令歷史時間格式..."
+# ==============================================================================
+# 修改處：第 6 步 (寫入 Cloud-init 設定檔，強制允許 Root 與密碼)
+# ==============================================================================
+log "6. 時區與 Cloud-init 優化 (徹底壓制 Cloud-init)..."
 dnf install -y cloud-init
 echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+
+# 告訴 Cloud-init：不准封鎖 Root，不准關閉密碼登入！
+cat << 'EOF' > /etc/cloud/cloud.cfg.d/99-cdncloud-ssh.cfg
+disable_root: false
+ssh_pwauth: true
+EOF
+
 timedatectl set-timezone Asia/Taipei
 if ! grep -q "HISTTIMEFORMAT" /etc/profile; then
     echo 'export HISTTIMEFORMAT="%F %T "' >> /etc/profile
