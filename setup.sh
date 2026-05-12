@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# CDNCloud Golden Image - 最終完美封裝腳本 (確保 22 Port 復活與紀錄全清)
+# CDNCloud Golden Image - SSH 終極修復版
+# 其他邏輯維持不變，僅修復 Systemd 啟動死鎖問題，確保 22 Port 順利復活
 # ==============================================================================
 set -euo pipefail
 
 log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 
-# 1. 權限檢查
+# 1. 確保權限
 [[ "$EUID" -ne 0 ]] && echo "請使用 root 執行" && exit 1
 
 log "1. 配置軟體源與系統更新..."
@@ -72,25 +73,28 @@ rtcsync
 EOF
 systemctl enable --now chronyd && systemctl restart chronyd
 
-# --- 核心自癒服務：這是 22 Port 復活的關鍵 ---
-log "8. 建立 SSH 自癒強啟服務 (新機開機必殺技)..."
+# ==============================================================================
+# 修改處：第 8 步 (移除重啟指令，解開死鎖，只做金鑰生成，讓系統原生啟動 SSH)
+# ==============================================================================
+log "8. 建立 SSH 自癒強啟服務 (修復死鎖)..."
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-ssh-keygen.service
 [Unit]
-Description=CDNCloud SSH Keygen and Auto-Start
+Description=CDNCloud SSH Keygen
 Before=sshd.service
 ConditionPathExists=!/etc/ssh/ssh_host_rsa_key
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/ssh-keygen -A
-ExecStartPost=/usr/bin/systemctl restart sshd
-RemainAfterExit=yes
 
 [Install]
+RequiredBy=sshd.service
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable cdncloud-ssh-keygen.service
+# 確保 sshd 本身是啟用狀態
+systemctl enable sshd
 
 log "9. 保留 Change_SSH_Port.sh 工具..."
 cat << 'EOF' > /usr/local/bin/Change_SSH_Port.sh
@@ -117,7 +121,7 @@ find /var/log -type f -exec truncate -s 0 {} +
 log "封裝完成！系統將在 3 秒後自動『強制斷電』..."
 sleep 3
 
-# --- 歷史紀錄核平處理：保證 1-5 筆紀錄消失 ---
+# --- 歷史紀錄核平處理 ---
 set +o history
 export HISTSIZE=0
 export HISTFILESIZE=0
