@@ -78,7 +78,7 @@ rtcsync
 EOF
 systemctl enable --now chronyd && systemctl restart chronyd
 
-# 8. 建立 SSH 自癒服務 (確保新機器開機自動產生金鑰並開啟 22 Port)
+# 8. 建立 SSH 自癒服務 (核心：確保新機器開機 22 Port 復活)
 log "8. 建立 SSH 自癒 Fail-Safe 服務..."
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-ssh-keygen.service
 [Unit]
@@ -95,18 +95,19 @@ EOF
 systemctl daemon-reload
 systemctl enable cdncloud-ssh-keygen.service
 
-# 9. 工具保留
+# 9. 工具保留 (修正 Shebang 與建立捷徑)
 log "9. 安裝並保留 Change_SSH_Port.sh 工具..."
 cat << 'EOF' > /usr/local/bin/Change_SSH_Port.sh
-#!/bash
+#!/bin/bash
 read -p "請輸入新的 SSH Port: " NEW_PORT
+if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then echo "錯誤"; exit 1; fi
 sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
 systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /usr/local/bin/Change_SSH_Port.sh
 ln -sf /usr/local/bin/Change_SSH_Port.sh /root/Change_SSH_Port.sh
 
-# 10. 移除 Git 並清理殘留
+# 10. 移除 Git 並清理殘留 (包含 anaconda 與 Rocky-8 目錄)
 log "10. 移除 Git 並清理安裝殘留檔案..."
 dnf remove -y git
 rm -rf /root/Rocky-8 /root/original-ks.cfg /root/anaconda-ks.cfg
@@ -115,18 +116,19 @@ rm -rf /root/Rocky-8 /root/original-ks.cfg /root/anaconda-ks.cfg
 log "11. 執行終極大掃除 (抹除痕跡)..."
 rm -f /etc/ssh/ssh_host_*_key*
 rm -rf /var/lib/cloud/instances/* /var/log/cloud-init*
-# 修正報錯點：改用 truncate 確保不噴錯
 [ -f /etc/machine-id ] && truncate -s 0 /etc/machine-id
 [ -f /etc/hostname ] && truncate -s 0 /etc/hostname
 find /var/log -type f -exec truncate -s 0 {} +
 
-log "封裝完成！所有痕跡 (包含 1-5 筆歷史紀錄) 已抹除。系統將在 3 秒後自動關機..."
+log "封裝完成！所有痕跡 (包含歷史紀錄) 已抹除。系統將在 3 秒後自動關機..."
+log "請注意：現在沒有 22 Port 是正常的，關機後做成鏡像，新機器開機 22 就會自動回來了。"
 sleep 3
 
 # ==========================================================
-# 終極歷史紀錄抹除：關閉錄影、清空緩存、刪除檔案、強制斷電
+# 終極「核平」歷史紀錄：關閉錄影、清空緩存、強制斷電
 # ==========================================================
 set +o history
 export HISTSIZE=0
+export HISTFILESIZE=0
 rm -f /root/.bash_history /root/.history
 poweroff -f
