@@ -91,10 +91,9 @@ fi
 
 dnf install -y cloud-init
 
-# --- 新增：註解掉原本的 network 區塊 (根據圖片要求) ---
+# 註解掉原本的 network 區塊
 sed -i 's/^network:/# network:/' /etc/cloud/cloud.cfg || true
 sed -i 's/^[[:space:]]*renderers:/#   renderers:/' /etc/cloud/cloud.cfg || true
-# ------------------------------------------------------
 
 mkdir -p /etc/cloud/cloud.cfg.d/
 echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
@@ -148,18 +147,30 @@ cat << 'EOF' >> /etc/security/limits.conf
 EOF
 
 # ==============================================================================
-# 8. 時區與時間同步
+# 8. 時區與時間同步 (★ 修改處：只保留兩個指定的 Server)
 # ==============================================================================
-log "8. 設定時區與時間同步 (Chrony)..."
+log "8. 設定時區與時間同步 (Chrony 鎖定雙源版)..."
 timedatectl set-timezone Asia/Taipei
 if ! grep -q "HISTTIMEFORMAT" /etc/profile; then
     echo 'export HISTTIMEFORMAT="%F %T "' >> /etc/profile
 fi
 
-sed -i '/^server /d' /etc/chrony.conf
-echo "server 120.25.115.20 iburst" >> /etc/chrony.conf
-echo "server 203.107.6.88 iburst" >> /etc/chrony.conf
-systemctl enable --now chronyd && systemctl restart chronyd
+# 徹底清除所有包含 server 與 pool 的行，避免殘留
+sed -i '/^[[:space:]]*pool/d' /etc/chrony.conf
+sed -i '/^[[:space:]]*server/d' /etc/chrony.conf
+
+# 只寫入指定的兩個伺服器與強制校準指令
+cat << 'EOF' >> /etc/chrony.conf
+server 120.25.115.20 iburst
+server 203.107.6.88 iburst
+makestep 1.0 3
+rtcsync
+EOF
+
+systemctl enable --now chronyd
+systemctl restart chronyd
+# 執行強制校時
+chronyc makestep || true
 
 # ==============================================================================
 # 9. 建立自修復服務與客製化工具
