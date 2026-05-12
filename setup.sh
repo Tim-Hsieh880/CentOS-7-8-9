@@ -53,11 +53,10 @@ systemctl restart sshd
 
 if id rocky &>/dev/null; then
     usermod -L -s /sbin/nologin rocky
-    log "帳號 rocky 已成功禁用"
 fi
 
 # 5. 網路配置 (指定 DNS 並配合 PEERDNS=no)
-log "5. 統一網卡命名為 eth0 與網路配置 (指定 8.8.8.8)..."
+log "5. 統一網卡命名為 eth0 與網路配置..."
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
 TYPE=Ethernet
@@ -101,8 +100,10 @@ lock_passwd: false
 ssh_genkeytypes: ['rsa', 'ecdsa', 'ed25519']
 EOF
 
-# 8. 系統優化與 History 時間戳記
-log "8. 寫入核心、資源限制與 History 時間格式..."
+# 8. 系統優化、時區與 History 時間戳記
+log "8. 寫入核心、時區、History 時間格式..."
+timedatectl set-timezone Asia/Taipei
+
 cat << 'EOF' >> /etc/sysctl.conf
 vm.swappiness = 0
 kernel.sysrq = 1
@@ -116,13 +117,13 @@ cat << 'EOF' >> /etc/security/limits.conf
 * hard nofile 131072
 EOF
 
+# 客戶登入後執行 history 會看到時間
 if ! grep -q "HISTTIMEFORMAT" /etc/profile; then
     echo 'export HISTTIMEFORMAT="%F %T "' >> /etc/profile
 fi
 
-# 9. 時間同步 (修正伺服器配置)
-log "9. 設定時間同步 (Chrony 重置)..."
-# 這裡改用覆寫方式，防止重複寫入
+# 9. 時間同步 (修正伺服器配置並強制快步同步)
+log "9. 設定時間同步 (Chrony 修正)..."
 cat << 'EOF' > /etc/chrony.conf
 server 120.25.115.20 iburst
 server 203.107.6.88 iburst
@@ -134,7 +135,7 @@ EOF
 systemctl enable --now chronyd
 systemctl restart chronyd
 
-# 10. 建立自修復服務與客製化工具
+# 10. 建立自修復服務與工具
 log "10. 建立 SSH 自癒機制與保留工具..."
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-ssh-keygen.service
 [Unit]
@@ -168,10 +169,11 @@ chmod +x /usr/local/bin/Change_SSH_Port.sh
 ln -sf /usr/local/bin/Change_SSH_Port.sh /root/Change_SSH_Port.sh
 
 # 11. 終極大掃除與自動關機
-log "11. 執行終極大掃除並準備關機..."
+log "11. 執行終極大掃除並準備自動關機..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
+# 清理金鑰、日誌與 Cloud-init
 rm -f /etc/ssh/ssh_host_*_key*
 rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
 rm -rf /var/lib/cloud/sem/*
@@ -179,4 +181,30 @@ rm -rf /run/log/journal/* || true
 rm -f ~root/anaconda-ks.cfg
 rm -rf /var/log/anaconda /var/tmp/* /tmp/* || true
 
-cat /dev/null > /etc/
+# 修正之前可能會噴錯的寫入邏輯
+cat /dev/null > /etc/machine-id
+truncate -s 0 /etc/hostname
+
+# 清空所有日誌檔案內容
+find /var/log -type f -exec truncate -s 0 {} +
+
+# 清理指定殘留與移除 Git
+log "清理 ~/Rocky-8, ~/original-ks.cfg 並移除 Git..."
+rm -rf ~/Rocky-8 ~/original-ks.cfg
+dnf remove -y git
+
+# 清理 Root 敏感紀錄
+rm -rf ~root/.ssh/*
+rm -rf ~root/.pki/*
+
+log "封裝完成！歷史紀錄與殘留已清除。系統將在 3 秒後自動關機..."
+sleep 3
+
+# ==========================================================
+# 終極清理：關閉歷史紀錄，刪除檔案，立即關機
+# ==========================================================
+set +o history
+export HISTSIZE=0
+rm -f ~root/.bash_history
+rm -f ~root/.history
+poweroff
