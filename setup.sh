@@ -101,8 +101,8 @@ lock_passwd: false
 ssh_genkeytypes: ['rsa', 'ecdsa', 'ed25519']
 EOF
 
-# 8. 系統優化
-log "8. 寫入核心與資源限制優化..."
+# 8. 系統優化與 History 時間戳記
+log "8. 寫入核心、資源限制與 History 時間格式..."
 cat << 'EOF' >> /etc/sysctl.conf
 vm.swappiness = 0
 kernel.sysrq = 1
@@ -110,10 +110,16 @@ net.ipv4.tcp_max_tw_buckets = 5000
 net.ipv4.tcp_syncookies = 1
 EOF
 sysctl -p
+
 cat << 'EOF' >> /etc/security/limits.conf
 * soft nofile 655360
 * hard nofile 131072
 EOF
+
+# 加入指令歷史時間紀錄格式
+if ! grep -q "HISTTIMEFORMAT" /etc/profile; then
+    echo 'export HISTTIMEFORMAT="%F %T "' >> /etc/profile
+fi
 
 # 9. 時間同步
 log "9. 設定時間同步 (Chrony)..."
@@ -123,7 +129,6 @@ systemctl enable --now chronyd
 
 # 10. 建立自修復服務與客製化工具
 log "10. 建立 SSH 自癒機制與保留工具..."
-# SSH 金鑰自癒服務：保證開機沒金鑰時自動補齊，防 22 Port 斷線
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-ssh-keygen.service
 [Unit]
 Description=CDNCloud SSH Keygen Fail-Safe
@@ -138,7 +143,6 @@ WantedBy=multi-user.target
 EOF
 systemctl enable cdncloud-ssh-keygen.service
 
-# 保留改 Port 工具在本體 /usr/local/bin/ 並建立快捷方式
 cat << 'EOF' > /usr/local/bin/Change_SSH_Port.sh
 #!/bin/bash
 read -p "請輸入新的 SSH Port: " NEW_PORT
@@ -156,7 +160,7 @@ chmod +x /usr/local/bin/Change_SSH_Port.sh
 ln -sf /usr/local/bin/Change_SSH_Port.sh /root/Change_SSH_Port.sh
 
 # 11. 終極大掃除與自動關機
-log "11. 執行終極大掃除並自動關機..."
+log "11. 執行終極大掃除並準備關機..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
@@ -175,18 +179,19 @@ for logfile in boot.log lastlog btmp wtmp secure cron maillog spooler messages y
     [ -f "/var/log/$logfile" ] && echo > "/var/log/$logfile"
 done
 
-# 清理指定的殘留與移除 Git
+# 清理指定殘留與移除 Git
 log "清理 ~/Rocky-8, ~/original-ks.cfg 並移除 Git..."
 rm -rf ~/Rocky-8 ~/original-ks.cfg
 dnf remove -y git
 
-# 清理 Root 紀錄 (防呆檢查)
+# 清理 Root 敏感紀錄
 rm -rf ~root/.ssh/*
 rm -rf ~root/.pki/*
-[ -f ~root/.bash_history ] && echo > ~root/.bash_history
-[ -f ~root/.history ] && echo > ~root/.history
-history -c
 
 log "封裝完成！Change_SSH_Port.sh 已保留。系統將在 3 秒後自動關機..."
 sleep 3
-poweroff
+
+# 最後一步：清除所有歷史紀錄並關機
+[ -f ~root/.bash_history ] && rm -f ~root/.bash_history
+[ -f ~root/.history ] && rm -f ~root/.history
+history -c && history -w && poweroff
