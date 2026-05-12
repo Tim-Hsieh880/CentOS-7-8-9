@@ -90,6 +90,12 @@ if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
 fi
 
 dnf install -y cloud-init
+
+# --- 新增：註解掉原本的 network 區塊 (根據圖片要求) ---
+sed -i 's/^network:/# network:/' /etc/cloud/cloud.cfg || true
+sed -i 's/^[[:space:]]*renderers:/#   renderers:/' /etc/cloud/cloud.cfg || true
+# ------------------------------------------------------
+
 mkdir -p /etc/cloud/cloud.cfg.d/
 echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
 
@@ -188,7 +194,6 @@ fi
 systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 
-# 賦予工具與捷徑執行權限 (加入使用者要求的 chmod)
 chmod +x /usr/local/bin/Change_SSH_Port.sh
 ln -sf /usr/local/bin/Change_SSH_Port.sh /root/Change_SSH_Port.sh
 chmod +x /root/Change_SSH_Port.sh
@@ -216,7 +221,6 @@ fi
 done
 EOF
 
-# 賦予執行權限 (使用者要求)
 chmod +x /usr/lib/systemd/system/cdncloud-qga.sh
 
 # QGA Service
@@ -232,7 +236,6 @@ ExecStart=/usr/lib/systemd/system/cdncloud-qga.sh
 WantedBy=multi-user.target
 EOF
 
-# 啟動並重載 QGA 服務 (使用者要求 --now)
 systemctl daemon-reload
 systemctl enable --now cdncloud-qga
 
@@ -332,7 +335,6 @@ systemctl enable --now qemu-guest-agent
 fi
 EOF
 
-# 賦予執行權限 (使用者要求)
 chmod +x /var/lib/cloud/scripts/per-boot/install-qga.sh
 
 # ==============================================================================
