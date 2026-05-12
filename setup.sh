@@ -53,7 +53,7 @@ systemctl restart sshd
 
 if id rocky &>/dev/null; then
     usermod -L -s /sbin/nologin rocky
-    log "帳號 rocky 已成功禁用 (密碼鎖定且 Shell 已關閉)"
+    log "帳號 rocky 已成功禁用"
 fi
 
 # 5. 網路配置 (指定 DNS 並配合 PEERDNS=no)
@@ -116,16 +116,23 @@ cat << 'EOF' >> /etc/security/limits.conf
 * hard nofile 131072
 EOF
 
-# 加入指令歷史時間紀錄格式
 if ! grep -q "HISTTIMEFORMAT" /etc/profile; then
     echo 'export HISTTIMEFORMAT="%F %T "' >> /etc/profile
 fi
 
-# 9. 時間同步
-log "9. 設定時間同步 (Chrony)..."
-sed -i '/^server /d' /etc/chrony.conf
-echo "server 120.25.115.20 iburst" >> /etc/chrony.conf
+# 9. 時間同步 (修正伺服器配置)
+log "9. 設定時間同步 (Chrony 重置)..."
+# 這裡改用覆寫方式，防止重複寫入
+cat << 'EOF' > /etc/chrony.conf
+server 120.25.115.20 iburst
+server 203.107.6.88 iburst
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+logdir /var/log/chrony
+EOF
 systemctl enable --now chronyd
+systemctl restart chronyd
 
 # 10. 建立自修復服務與客製化工具
 log "10. 建立 SSH 自癒機制與保留工具..."
@@ -141,6 +148,7 @@ ExecStartPost=-/usr/sbin/restorecon -Rv /etc/ssh
 [Install]
 WantedBy=multi-user.target
 EOF
+systemctl daemon-reload
 systemctl enable cdncloud-ssh-keygen.service
 
 cat << 'EOF' > /usr/local/bin/Change_SSH_Port.sh
@@ -164,7 +172,6 @@ log "11. 執行終極大掃除並準備關機..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
-# 清理金鑰、日誌與 Cloud-init
 rm -f /etc/ssh/ssh_host_*_key*
 rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
 rm -rf /var/lib/cloud/sem/*
@@ -172,26 +179,4 @@ rm -rf /run/log/journal/* || true
 rm -f ~root/anaconda-ks.cfg
 rm -rf /var/log/anaconda /var/tmp/* /tmp/* || true
 
-cat /dev/null > /etc/machine-id
-echo > /etc/hostname
-
-for logfile in boot.log lastlog btmp wtmp secure cron maillog spooler messages yum.log; do
-    [ -f "/var/log/$logfile" ] && echo > "/var/log/$logfile"
-done
-
-# 清理指定殘留與移除 Git
-log "清理 ~/Rocky-8, ~/original-ks.cfg 並移除 Git..."
-rm -rf ~/Rocky-8 ~/original-ks.cfg
-dnf remove -y git
-
-# 清理 Root 敏感紀錄
-rm -rf ~root/.ssh/*
-rm -rf ~root/.pki/*
-
-log "封裝完成！Change_SSH_Port.sh 已保留。系統將在 3 秒後自動關機..."
-sleep 3
-
-# 最後一步：清除所有歷史紀錄並關機
-[ -f ~root/.bash_history ] && rm -f ~root/.bash_history
-[ -f ~root/.history ] && rm -f ~root/.history
-history -c && history -w && poweroff
+cat /dev/null > /etc/
