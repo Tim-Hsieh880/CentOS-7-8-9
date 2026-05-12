@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
+# ==============================================================================
+# CDNCloud Golden Image Optimization & Cleanup Script
+# 功能：DNS優化、SSH自癒、時區校正、帳號鎖定、工具保留、痕跡全抹除、自動關機
+# ==============================================================================
 set -euo pipefail
 
 log() { echo -e "\n\033[1;32m[+] $*\033[0m"; }
 
-# 1. 確保權限與配置官方軟體源
+# 1. 權限檢查
 [[ "$EUID" -ne 0 ]] && echo "請使用 root 執行" && exit 1
 
-log "1. 配置系統軟體源 (恢復官方源)..."
+log "1. 配置系統軟體源..."
 if [ -d "/etc/yum.repos.d.backup" ]; then
     \cp -rf /etc/yum.repos.d.backup/* /etc/yum.repos.d/
 else
@@ -15,22 +19,17 @@ fi
 
 log "清理並重建軟體源快取..."
 dnf clean all && dnf makecache
-dnf repolist
 
-# 2. 系統更新與安裝基礎工具
-log "2. 系統更新與準備基礎工具..."
+# 2. 安裝基礎工具
+log "2. 系統更新與安裝基礎工具 (含 Git)..."
 dnf -y update --exclude=kernel*
 dnf install -y epel-release
-dnf install -y \
-    python3 python3-pip gcc gcc-c++ wget net-tools psmisc lsof bzip2 \
-    telnet nmap lrzsz rsync zip unzip dos2unix gdisk parted \
-    cloud-utils-growpart e2fsprogs vim \
-    policycoreutils-python-utils firewalld acpid git
+dnf install -y python3 python3-pip gcc gcc-c++ wget net-tools psmisc lsof bzip2 \
+               telnet nmap lrzsz rsync zip unzip dos2unix gdisk parted \
+               cloud-utils-growpart e2fsprogs vim firewalld acpid git
 
-pip3 install --upgrade pip
-
-# 3. 系統服務配置
-log "3. 系統服務 (Acpid & Firewalld) 配置..."
+# 3. 服務配置
+log "3. 系統服務基礎配置..."
 systemctl enable --now acpid
 systemctl enable --now firewalld
 firewall-cmd --permanent --add-service=ssh > /dev/null 2>&1
@@ -38,25 +37,18 @@ firewall-cmd --reload > /dev/null 2>&1
 systemctl stop --now firewalld
 systemctl disable firewalld
 
-# 4. SSH 安全與基礎帳號防護
-log "4. SSH 安全與基礎帳號防護..."
-if [ -f /etc/selinux/config ]; then
-  sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
-fi
+# 4. SSH 與帳號安全
+log "4. SSH 安全優化與鎖定預設帳號..."
+sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config || true
 setenforce 0 2>/dev/null || true
-
 ssh-keygen -A
-restorecon -Rv /etc/ssh || true
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 systemctl restart sshd
+id rocky &>/dev/null && usermod -L -s /sbin/nologin rocky
 
-if id rocky &>/dev/null; then
-    usermod -L -s /sbin/nologin rocky
-fi
-
-# 5. 網路配置 (指定 DNS 並配合 PEERDNS=no 確保 8.8.8.8 優先)
-log "5. 統一網卡命名為 eth0 與網路配置 (DNS 優先設定)..."
+# 5. 網路配置 (指定 DNS 優先並防止被 DHCP 篡改)
+log "5. 統一網卡 eth0 並設定優先 DNS (8.8.8.8)..."
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
 TYPE=Ethernet
@@ -70,73 +62,26 @@ DNS2=1.1.1.1
 DNS3=114.114.114.114
 EOF
 
-mkdir -p /etc/cloud/cloud.cfg.d/
-echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
-
-if ! grep -q "net.ifnames=0" /etc/default/grub; then
-    sed -i 's/GRUB_CMDLINE_LINUX="/GRUB_CMDLINE_LINUX="net.ifnames=0 biosdevname=0 /' /etc/default/grub
-    grub2-mkconfig -o /boot/grub2/grub.cfg || true
-fi
-
-# 6. 配置 DNF 優化
-log "6. 配置 DNF 優化..."
-if ! grep -q "fastestmirror=True" /etc/dnf/dnf.conf; then
-  echo "fastestmirror=True" >> /etc/dnf/dnf.conf
-fi
-
-# 7. Cloud-init 設定
-log "7. 寫入 Cloud-init 設定與 SSH 金鑰策略..."
+# 6. Cloud-init 與系統優化
+log "6. 配置 Cloud-init 與核心優化..."
 dnf install -y cloud-init
-sed -i 's/^\(disable_root:\).*$/\1 false/g' /etc/cloud/cloud.cfg
-sed -i 's/^\(ssh_pwauth:\).*$/\1 true/g' /etc/cloud/cloud.cfg
-if ! grep -q "\- ssh$" /etc/cloud/cloud.cfg; then
-  sed -i '/cloud_init_modules:/a \ - ssh' /etc/cloud/cloud.cfg
-fi
-cat << 'EOF' >> /etc/cloud/cloud.cfg
-datasource:
-  Ec2: { max_wait: 5 }
-  CloudStack: { max_wait: 5 }
-lock_passwd: false
-ssh_genkeytypes: ['rsa', 'ecdsa', 'ed25519']
-EOF
-
-# 8. 系統優化、時區與指令歷史格式
-log "8. 寫入核心、時區 (台北)、History 時間格式..."
+echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
 timedatectl set-timezone Asia/Taipei
+echo 'export HISTTIMEFORMAT="%F %T "' >> /etc/profile
 
-cat << 'EOF' >> /etc/sysctl.conf
-vm.swappiness = 0
-kernel.sysrq = 1
-net.ipv4.tcp_max_tw_buckets = 5000
-net.ipv4.tcp_syncookies = 1
-EOF
-sysctl -p
-
-cat << 'EOF' >> /etc/security/limits.conf
-* soft nofile 655360
-* hard nofile 131072
-EOF
-
-# 客戶未來開機後，他們自己的指令會帶時間戳記
-if ! grep -q "HISTTIMEFORMAT" /etc/profile; then
-    echo 'export HISTTIMEFORMAT="%F %T "' >> /etc/profile
-fi
-
-# 9. 時間同步 (修正伺服器並強制快步同步)
-log "9. 設定時間同步 (Chrony 修正)..."
+# 7. 時間同步
+log "7. 配置 Chrony 強制同步..."
 cat << 'EOF' > /etc/chrony.conf
 server 120.25.115.20 iburst
 server 203.107.6.88 iburst
 driftfile /var/lib/chrony/drift
 makestep 1.0 3
 rtcsync
-logdir /var/log/chrony
 EOF
-systemctl enable --now chronyd
-systemctl restart chronyd
+systemctl enable --now chronyd && systemctl restart chronyd
 
-# 10. 建立自修復服務與工具 (保留 Change_SSH_Port.sh)
-log "10. 建立 SSH 自癒機制與保留工具..."
+# 8. 建立 SSH 自癒服務
+log "8. 建立 SSH 金鑰自癒 Fail-Safe 服務..."
 cat << 'EOF' > /usr/lib/systemd/system/cdncloud-ssh-keygen.service
 [Unit]
 Description=CDNCloud SSH Keygen Fail-Safe
@@ -145,65 +90,41 @@ ConditionPathExists=!/etc/ssh/ssh_host_rsa_key
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/ssh-keygen -A
-ExecStartPost=-/usr/sbin/restorecon -Rv /etc/ssh
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
-systemctl enable cdncloud-ssh-keygen.service
+systemctl daemon-reload && systemctl enable cdncloud-ssh-keygen.service
 
+# 9. 保留 Change_SSH_Port 工具
+log "9. 安裝並保留 Change_SSH_Port.sh 工具..."
 cat << 'EOF' > /usr/local/bin/Change_SSH_Port.sh
 #!/bin/bash
 read -p "請輸入新的 SSH Port: " NEW_PORT
-if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]]; then echo "錯誤"; exit 1; fi
 sed -i "s/^#\?Port .*/Port $NEW_PORT/" /etc/ssh/sshd_config
-if systemctl is-active --quiet firewalld; then
-    firewall-cmd --permanent --add-port=$NEW_PORT/tcp
-    firewall-cmd --reload
-fi
-ssh-keygen -A
-restorecon -Rv /etc/ssh || true
 systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /usr/local/bin/Change_SSH_Port.sh
 ln -sf /usr/local/bin/Change_SSH_Port.sh /root/Change_SSH_Port.sh
 
-# 11. 終極大掃除
-log "11. 執行終極大掃除 (抹除痕跡)..."
-sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
-echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
+# 10. 移除 Git 並清理殘留 (包含 anaconda-ks.cfg)
+log "10. 移除 Git 並清理安裝殘留檔案..."
+dnf remove -y git
+rm -rf /root/Rocky-8 /root/original-ks.cfg /root/anaconda-ks.cfg
 
+# 11. 終極大掃除 (日誌、快取、主機指紋)
+log "11. 抹除系統所有日誌與主機指紋..."
 rm -f /etc/ssh/ssh_host_*_key*
-rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
-rm -rf /var/lib/cloud/sem/*
-rm -rf /run/log/journal/* || true
-
-truncate -s 0 /etc/machine-id
-truncate -s 0 /etc/hostname
-
-# 清空所有日誌
+rm -rf /var/lib/cloud/instances/* /var/log/cloud-init*
+truncate -s 0 /etc/machine-id /etc/hostname
 find /var/log -type f -exec truncate -s 0 {} +
 
-# 清理指定殘留與移除 Git
-log "清理 ~/Rocky-8 並移除 Git..."
-rm -rf ~/Rocky-8 ~/original-ks.cfg
-dnf remove -y git
-
-# 清理 Root 敏感檔案
-rm -rf ~root/.ssh/*
-rm -rf ~root/.pki/*
-
-log "封裝完成！歷史紀錄與殘留已徹底清除。系統將在 3 秒後自動強制關機..."
+log "封裝完成！所有痕跡 (包含歷史紀錄) 已抹除。系統將在 3 秒後自動斷電..."
 sleep 3
 
 # ==========================================================
-# 終極「核平」歷史紀錄：
-# 1. 關閉錄影功能 2. 清空硬碟檔案 3. 清空記憶體 4. 強制關機
+# 終極歷史紀錄抹除：關閉錄影、清空緩存、刪除檔案、強制斷電
 # ==========================================================
 set +o history
 export HISTSIZE=0
-export HISTFILESIZE=0
-rm -f /root/.bash_history
-rm -f /root/.history
-# 強制關機（使用 -f 以免 Bash 有機會再寫入歷史）
+rm -f /root/.bash_history /root/.history
 poweroff -f
