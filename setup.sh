@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# CDNCloud Golden Image - 終極密碼直連版
-# 功能：自動金鑰生成(防死鎖)、強制允許密碼登入、歷史紀錄徹底核平
+# CDNCloud Golden Image - 終極不翻車版
+# 核心：防死鎖金鑰自癒、00-最高權重密碼解鎖、歷史紀錄核平處理
 # ==============================================================================
 set -euo pipefail
 
@@ -34,19 +34,22 @@ systemctl stop --now firewalld
 systemctl disable firewalld
 
 # ==============================================================================
-# 修改處：第 4 步 (加入霸王條款，強制開啟密碼與 Root 登入)
+# 核心優化：建立 00- 霸王條款，徹底免疫 Cloud-init 的密碼封鎖
 # ==============================================================================
-log "4. SSH 與帳號安全優化 (強制啟用密碼直連)..."
+log "4. SSH 與帳號安全優化 (寫入 00- 最高權重密碼解鎖)..."
 sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config || true
 setenforce 0 2>/dev/null || true
 
-# 建立最高優先級的 SSH 設定檔，防止被 Cloud-init 覆蓋
+# 確保目錄存在，並刪除可能存在的 cloud-init 干擾設定
 mkdir -p /etc/ssh/sshd_config.d/
-cat << 'EOF' > /etc/ssh/sshd_config.d/99-cdncloud-auth.conf
+rm -f /etc/ssh/sshd_config.d/*cloud-init* || true
+
+# 寫入 00-cdncloud-auth.conf (數字越小，越早讀取，權重最高)
+cat << 'EOF' > /etc/ssh/sshd_config.d/00-cdncloud-auth.conf
 PasswordAuthentication yes
 PermitRootLogin yes
 EOF
-chmod 600 /etc/ssh/sshd_config.d/99-cdncloud-auth.conf
+chmod 600 /etc/ssh/sshd_config.d/00-cdncloud-auth.conf
 
 systemctl enable sshd
 id rocky &>/dev/null && usermod -L -s /sbin/nologin rocky
@@ -126,7 +129,9 @@ find /var/log -type f -exec truncate -s 0 {} +
 log "封裝完成！系統將在 3 秒後自動『強制斷電』..."
 sleep 3
 
-# --- 歷史紀錄核平處理 ---
+# ==============================================================================
+# 歷史紀錄核平處理 (切斷電源前清空大腦)
+# ==============================================================================
 set +o history
 export HISTSIZE=0
 export HISTFILESIZE=0
