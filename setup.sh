@@ -56,7 +56,7 @@ if id rocky &>/dev/null; then
 fi
 
 # 5. 網路配置 (指定 DNS 並配合 PEERDNS=no 確保 8.8.8.8 優先)
-log "5. 統一網卡命名為 eth0 與網路配置..."
+log "5. 統一網卡命名為 eth0 與網路配置 (DNS 優先設定)..."
 rm -f /etc/sysconfig/network-scripts/ifcfg-ens* || true
 cat << 'EOF' > /etc/sysconfig/network-scripts/ifcfg-eth0
 TYPE=Ethernet
@@ -100,8 +100,8 @@ lock_passwd: false
 ssh_genkeytypes: ['rsa', 'ecdsa', 'ed25519']
 EOF
 
-# 8. 系統優化、時區與 History 時間戳記
-log "8. 寫入核心、時區、History 時間格式..."
+# 8. 系統優化、時區與指令歷史格式
+log "8. 寫入核心、時區 (台北)、History 時間格式..."
 timedatectl set-timezone Asia/Taipei
 
 cat << 'EOF' >> /etc/sysctl.conf
@@ -117,12 +117,12 @@ cat << 'EOF' >> /etc/security/limits.conf
 * hard nofile 131072
 EOF
 
-# 加入指令歷史時間紀錄格式 (以後客戶開機可以看到他們自己的指令時間)
+# 客戶未來開機後，他們自己的指令會帶時間戳記
 if ! grep -q "HISTTIMEFORMAT" /etc/profile; then
     echo 'export HISTTIMEFORMAT="%F %T "' >> /etc/profile
 fi
 
-# 9. 時間同步 (修正並強制同步)
+# 9. 時間同步 (修正伺服器並強制快步同步)
 log "9. 設定時間同步 (Chrony 修正)..."
 cat << 'EOF' > /etc/chrony.conf
 server 120.25.115.20 iburst
@@ -166,7 +166,6 @@ restorecon -Rv /etc/ssh || true
 systemctl restart sshd && echo "SSH Port 已更改為 $NEW_PORT"
 EOF
 chmod +x /usr/local/bin/Change_SSH_Port.sh
-# 在 root 目錄建立快捷連結
 ln -sf /usr/local/bin/Change_SSH_Port.sh /root/Change_SSH_Port.sh
 
 # 11. 終極大掃除
@@ -174,13 +173,11 @@ log "11. 執行終極大掃除 (抹除痕跡)..."
 sed -i '/^#IMAGE_CREATION_DATE=/d' /etc/os-release
 echo "#IMAGE_CREATION_DATE=\"$(date +%Y%m%d)\"" >> /etc/os-release
 
-# 清理金鑰與 Cloud-init
 rm -f /etc/ssh/ssh_host_*_key*
 rm -rf /var/lib/cloud/instances/* /var/lib/cloud/instance /var/lib/cloud/data/* /var/log/cloud-init*
 rm -rf /var/lib/cloud/sem/*
 rm -rf /run/log/journal/* || true
 
-# 修正報錯：清空識別碼與 hostname
 truncate -s 0 /etc/machine-id
 truncate -s 0 /etc/hostname
 
@@ -188,22 +185,25 @@ truncate -s 0 /etc/hostname
 find /var/log -type f -exec truncate -s 0 {} +
 
 # 清理指定殘留與移除 Git
-log "清理 ~/Rocky-8, ~/original-ks.cfg 並移除 Git..."
+log "清理 ~/Rocky-8 並移除 Git..."
 rm -rf ~/Rocky-8 ~/original-ks.cfg
 dnf remove -y git
 
-# 清理 Root 敏感檔案 (排除我們保留的 Change_SSH_Port.sh)
+# 清理 Root 敏感檔案
 rm -rf ~root/.ssh/*
 rm -rf ~root/.pki/*
 
-log "封裝完成！所有痕跡已抹除。系統將在 3 秒後自動關機..."
+log "封裝完成！歷史紀錄與殘留已徹底清除。系統將在 3 秒後自動強制關機..."
 sleep 3
 
 # ==========================================================
-# 終極清理：關閉歷史紀錄錄影、徹底刪除檔案、立即關機
+# 終極「核平」歷史紀錄：
+# 1. 關閉錄影功能 2. 清空硬碟檔案 3. 清空記憶體 4. 強制關機
 # ==========================================================
 set +o history
 export HISTSIZE=0
-rm -f ~root/.bash_history
-rm -f ~root/.history
-poweroff
+export HISTFILESIZE=0
+rm -f /root/.bash_history
+rm -f /root/.history
+# 強制關機（使用 -f 以免 Bash 有機會再寫入歷史）
+poweroff -f
